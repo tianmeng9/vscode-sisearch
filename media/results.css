@@ -8,6 +8,11 @@ body {
     overflow-y: auto;
 }
 
+::selection {
+    background: var(--vscode-editor-selectionBackground, rgba(38, 79, 120, 0.5));
+    color: var(--vscode-editor-selectionForeground, inherit);
+}
+
 #toolbar {
     display: flex;
     justify-content: space-between;
