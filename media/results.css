@@ -125,6 +125,11 @@ body {
     white-space: pre;
 }
 
+.whitespace-char {
+    color: var(--vscode-editorWhitespace-foreground, rgba(255, 255, 255, 0.15));
+    font-size: 0.9em;
+}
+
 .hover-preview .preview-line.current {
     background: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 255, 0, 0.2));
 }

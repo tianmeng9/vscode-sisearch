@@ -183,6 +183,11 @@
 
     function showPreviewPopup(data) {
         hoverPreview.innerHTML = '';
+        if (data.bg) {
+            hoverPreview.style.background = data.bg;
+        } else {
+            hoverPreview.style.background = '';
+        }
         let targetLineElement = null;
         for (var i = 0; i < data.lines.length; i++) {
             var line = data.lines[i];

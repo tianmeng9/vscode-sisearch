@@ -111,13 +111,14 @@ export function activate(context: vscode.ExtensionContext) {
             case 'requestPreview': {
                 try {
                     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(msg.filePath));
-                    const lines = await tokenizeFile(doc.getText(), doc.languageId);
+                    const result = await tokenizeFile(doc.getText(), doc.languageId);
 
                     const preview: PreviewResponse = {
                         command: 'previewData',
                         filePath: msg.filePath,
                         lineNumber: msg.lineNumber,
-                        lines,
+                        lines: result.lines,
+                        bg: result.bg,
                     };
                     resultsPanel.sendPreviewData(preview);
                 } catch {

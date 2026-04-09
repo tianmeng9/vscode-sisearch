@@ -79,4 +79,5 @@ export type PreviewResponse = {
     filePath: string;
     lineNumber: number;
     lines: { num: number; content: string; html?: string }[];
+    bg?: string;
 };
