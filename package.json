@@ -1,0 +1,98 @@
+{
+  "name": "si-search",
+  "displayName": "SI Search",
+  "description": "Source Insight style search for VS Code",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onView:siSearch.searchPanel"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "si-search",
+          "title": "SI Search",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "si-search": [
+        {
+          "type": "webview",
+          "id": "siSearch.searchPanel",
+          "name": "Search"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "siSearch.focusSearchPanel", "title": "SI Search: Focus Search Panel" },
+      { "command": "siSearch.toggleResultsPanel", "title": "SI Search: Toggle Results Panel" },
+      { "command": "siSearch.nextResult", "title": "SI Search: Next Result" },
+      { "command": "siSearch.previousResult", "title": "SI Search: Previous Result" },
+      { "command": "siSearch.highlightSelection", "title": "SI Search: Highlight Selection" },
+      { "command": "siSearch.clearAllHighlights", "title": "SI Search: Clear All Highlights" },
+      { "command": "siSearch.jumpToResult", "title": "SI Search: Jump to Result from Source" }
+    ],
+    "keybindings": [
+      { "command": "siSearch.focusSearchPanel", "key": "ctrl+/", "mac": "cmd+/" },
+      { "command": "siSearch.toggleResultsPanel", "key": "ctrl+shift+/", "mac": "cmd+shift+/" },
+      { "command": "siSearch.nextResult", "key": "f3" },
+      { "command": "siSearch.previousResult", "key": "shift+f3" },
+      { "command": "siSearch.highlightSelection", "key": "alt+h" },
+      { "command": "siSearch.clearAllHighlights", "key": "alt+shift+h" }
+    ],
+    "configuration": {
+      "title": "SI Search",
+      "properties": {
+        "siSearch.includeFileExtensions": {
+          "type": "array",
+          "default": [".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".inl"],
+          "description": "File extensions to include in search"
+        },
+        "siSearch.excludePatterns": {
+          "type": "array",
+          "default": ["**/build/**", "**/.git/**", "**/node_modules/**"],
+          "description": "Glob patterns to exclude from search"
+        },
+        "siSearch.previewContextLines": {
+          "type": "number",
+          "default": 5,
+          "description": "Number of context lines in hover preview"
+        },
+        "siSearch.highlightColors": {
+          "type": "array",
+          "default": ["#FFEB3B", "#4CAF50", "#2196F3", "#FF5722", "#9C27B0", "#00BCD4"],
+          "description": "Colors for manual highlight marking"
+        },
+        "siSearch.navigationWrap": {
+          "type": "boolean",
+          "default": true,
+          "description": "Wrap around when navigating past last/first result"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "@types/mocha": "^10.0.0",
+    "@vscode/test-electron": "^2.3.0",
+    "mocha": "^10.2.0"
+  },
+  "dependencies": {
+    "@vscode/ripgrep": "^1.15.0"
+  }
+}
