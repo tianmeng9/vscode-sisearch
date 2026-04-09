@@ -8,6 +8,7 @@
     const btnAppend = document.getElementById('btnAppend');
     const btnReplace = document.getElementById('btnReplace');
     const historyList = document.getElementById('historyList');
+    const highlightList = document.getElementById('highlightList');
 
     function getOptions() {
         return {
@@ -46,6 +47,9 @@
                 btnAppend.disabled = false;
                 btnReplace.disabled = false;
                 break;
+            case 'updateHighlights':
+                renderHighlights(msg.highlights);
+                break;
         }
     });
 
@@ -81,6 +85,33 @@
             });
 
             historyList.appendChild(div);
+        }
+    }
+
+    function renderHighlights(highlights) {
+        highlightList.innerHTML = '';
+        if (!highlights || highlights.length === 0) {
+            var empty = document.createElement('div');
+            empty.className = 'highlight-empty';
+            empty.textContent = 'No highlights';
+            highlightList.appendChild(empty);
+            return;
+        }
+        for (const h of highlights) {
+            var div = document.createElement('div');
+            div.className = 'highlight-item';
+
+            var dot = document.createElement('span');
+            dot.className = 'highlight-color-dot';
+            dot.style.background = h.color;
+
+            var text = document.createElement('span');
+            text.className = 'highlight-text';
+            text.textContent = h.text;
+
+            div.appendChild(dot);
+            div.appendChild(text);
+            highlightList.appendChild(div);
         }
     }
 })();

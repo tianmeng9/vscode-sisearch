@@ -60,11 +60,7 @@ export function activate(context: vscode.ExtensionContext) {
                     updateSidebarHistory(store, sidebarProvider);
 
                     const entries = store.getActiveResultsPanelEntries();
-                    if (msg.mode === 'replace') {
-                        resultsPanel.showResults(entries, msg.query);
-                    } else {
-                        resultsPanel.appendResults(entries, msg.query);
-                    }
+                    resultsPanel.showResults(entries, msg.query);
 
                     editorDecorations.updateResults(store.getActiveResults());
                 } catch (err: any) {
@@ -128,13 +124,22 @@ export function activate(context: vscode.ExtensionContext) {
             }
             case 'clearAllHighlights': {
                 editorDecorations.clearDecorations();
+                sidebarProvider.postMessage({
+                    command: 'updateHighlights',
+                    highlights: [],
+                });
                 break;
             }
             case 'syncManualHighlights': {
+                const highlights = msg.highlights || [];
                 editorDecorations.updateManualHighlights(
-                    msg.highlights || [],
+                    highlights,
                     msg.boxMode !== false,
                 );
+                sidebarProvider.postMessage({
+                    command: 'updateHighlights',
+                    highlights,
+                });
                 break;
             }
         }

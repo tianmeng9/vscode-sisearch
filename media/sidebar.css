@@ -13,6 +13,8 @@ body {
     width: 100%;
     box-sizing: border-box;
     padding: 4px 8px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
     background: var(--vscode-input-background);
     color: var(--vscode-input-foreground);
     border: 1px solid var(--vscode-input-border, transparent);
@@ -27,7 +29,8 @@ body {
     display: flex;
     gap: 8px;
     margin-bottom: 6px;
-    font-size: 11px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
 }
 
 .search-options label {
@@ -50,15 +53,21 @@ body {
     color: var(--vscode-button-foreground);
     border: none;
     cursor: pointer;
-    font-size: 12px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
 }
 
 .search-actions button:hover {
     background: var(--vscode-button-hoverBackground);
 }
 
-.history-header {
-    font-size: 11px;
+.section-container {
+    margin-bottom: 12px;
+}
+
+.section-header {
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
     text-transform: uppercase;
     color: var(--vscode-descriptionForeground);
     margin-bottom: 4px;
@@ -73,6 +82,8 @@ body {
     justify-content: space-between;
     align-items: center;
     border-radius: 3px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
 }
 
 .history-item:hover {
@@ -92,7 +103,7 @@ body {
 }
 
 .history-item .count {
-    font-size: 11px;
+    font-size: var(--vscode-font-size);
     color: var(--vscode-descriptionForeground);
     margin-left: 8px;
 }
@@ -109,4 +120,36 @@ body {
 
 .history-item:hover .delete-btn {
     display: inline;
+}
+
+.highlight-item {
+    padding: 3px 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 3px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+}
+
+.highlight-item .highlight-color-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.highlight-item .highlight-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+.highlight-empty {
+    padding: 3px 8px;
+    color: var(--vscode-descriptionForeground);
+    font-style: italic;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
 }
