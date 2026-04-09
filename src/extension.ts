@@ -5,6 +5,7 @@ import { SearchStore } from './searchStore';
 import { SidebarProvider } from './sidebarProvider';
 import { ResultsPanel } from './resultsPanel';
 import { EditorDecorations } from './editorDecorations';
+import { SearchResultCodeLensProvider } from './codeLensProvider';
 import { executeSearch } from './searchEngine';
 import { navigateNext, navigatePrevious, openResultInEditor } from './navigation';
 import { SidebarMessage, SearchResult, PreviewResponse } from './types';
@@ -14,6 +15,7 @@ export function activate(context: vscode.ExtensionContext) {
     const sidebarProvider = new SidebarProvider(context.extensionUri);
     const resultsPanel = new ResultsPanel(context.extensionUri);
     const editorDecorations = new EditorDecorations(context.extensionUri);
+    const codeLensProvider = new SearchResultCodeLensProvider(store);
 
     // 注册侧边栏 webview provider
     context.subscriptions.push(
@@ -21,6 +23,14 @@ export function activate(context: vscode.ExtensionContext) {
             SidebarProvider.viewType,
             sidebarProvider,
             { webviewOptions: { retainContextWhenHidden: true } }
+        )
+    );
+
+    // 注册 CodeLens Provider（用于源文件中的"跳转回结果"链接）
+    context.subscriptions.push(
+        vscode.languages.registerCodeLensProvider(
+            { scheme: 'file' },
+            codeLensProvider
         )
     );
 

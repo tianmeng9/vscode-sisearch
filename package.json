@@ -45,7 +45,8 @@
       { "command": "siSearch.nextResult", "key": "f3" },
       { "command": "siSearch.previousResult", "key": "shift+f3" },
       { "command": "siSearch.highlightSelection", "key": "alt+h" },
-      { "command": "siSearch.clearAllHighlights", "key": "alt+shift+h" }
+      { "command": "siSearch.clearAllHighlights", "key": "alt+shift+h" },
+      { "command": "siSearch.jumpToResult", "key": "alt+j", "when": "editorTextFocus" }
     ],
     "configuration": {
       "title": "SI Search",

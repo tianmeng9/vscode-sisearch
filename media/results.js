@@ -7,6 +7,8 @@
 
     let allEntries = [];
     let hoverTimer = null;
+    let hoverRow = null;
+    let isMouseInPreview = false;
     let manualHighlights = [];
     const HIGHLIGHT_COLORS = [];
     let contextMenu = null;
@@ -94,6 +96,8 @@
             row.appendChild(contentSpan);
 
             row.addEventListener('mouseenter', function (e) {
+                hoverRow = row;
+                isMouseInPreview = false;
                 hoverTimer = setTimeout(() => {
                     vscode.postMessage({
                         command: 'requestPreview',
@@ -103,8 +107,13 @@
                 }, 500);
             });
             row.addEventListener('mouseleave', () => {
+                hoverRow = null;
                 clearTimeout(hoverTimer);
-                hoverPreview.style.display = 'none';
+                setTimeout(() => {
+                    if (!isMouseInPreview && !hoverRow) {
+                        hoverPreview.style.display = 'none';
+                    }
+                }, 100);
             });
 
             resultsList.appendChild(row);
@@ -145,6 +154,18 @@
         }
     }
 
+    hoverPreview.addEventListener('mouseenter', () => {
+        isMouseInPreview = true;
+    });
+    hoverPreview.addEventListener('mouseleave', () => {
+        isMouseInPreview = false;
+        setTimeout(() => {
+            if (!hoverRow) {
+                hoverPreview.style.display = 'none';
+            }
+        }, 100);
+    });
+
     function showPreviewPopup(data) {
         hoverPreview.innerHTML = '';
         for (var i = 0; i < data.lines.length; i++) {
@@ -158,15 +179,38 @@
             div.appendChild(document.createTextNode(line.content));
             hoverPreview.appendChild(div);
         }
-        hoverPreview.style.display = 'block';
 
-        var rect = hoverPreview.getBoundingClientRect();
+        // 定位在触发行附近（上方或下方），类似 VS Code 原生 hover
+        hoverPreview.style.display = 'block';
+        hoverPreview.style.top = '0px';
+        hoverPreview.style.left = '0px';
+
+        var previewRect = hoverPreview.getBoundingClientRect();
         var viewH = window.innerHeight;
         var viewW = window.innerWidth;
-        var top = Math.min(viewH / 2, viewH - rect.height - 20);
-        var left = Math.min(viewW / 2 + 20, viewW - rect.width - 20);
-        if (top < 0) { top = 10; }
-        if (left < 0) { left = 10; }
+        var top, left;
+
+        if (hoverRow) {
+            var rowRect = hoverRow.getBoundingClientRect();
+            // 优先显示在行上方
+            if (rowRect.top > previewRect.height + 4) {
+                top = rowRect.top - previewRect.height - 4;
+            } else {
+                // 空间不够则显示在行下方
+                top = rowRect.bottom + 4;
+            }
+            left = rowRect.left;
+        } else {
+            top = viewH / 2 - previewRect.height / 2;
+            left = viewW / 2 - previewRect.width / 2;
+        }
+
+        // 边界约束
+        if (top + previewRect.height > viewH) { top = viewH - previewRect.height - 4; }
+        if (top < 0) { top = 4; }
+        if (left + previewRect.width > viewW) { left = viewW - previewRect.width - 4; }
+        if (left < 0) { left = 4; }
+
         hoverPreview.style.top = top + 'px';
         hoverPreview.style.left = left + 'px';
     }
