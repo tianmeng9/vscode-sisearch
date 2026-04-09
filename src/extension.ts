@@ -1,6 +1,5 @@
 // src/extension.ts
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import { SearchStore } from './searchStore';
 import { SidebarProvider } from './sidebarProvider';
 import { ResultsPanel } from './resultsPanel';
@@ -9,6 +8,7 @@ import { SearchResultCodeLensProvider } from './codeLensProvider';
 import { executeSearch } from './searchEngine';
 import { navigateNext, navigatePrevious, openResultInEditor } from './navigation';
 import { SidebarMessage, SearchResult, PreviewResponse } from './types';
+import { tokenizeFile } from './syntaxHighlight';
 
 export function activate(context: vscode.ExtensionContext) {
     const store = new SearchStore();
@@ -110,41 +110,8 @@ export function activate(context: vscode.ExtensionContext) {
             }
             case 'requestPreview': {
                 try {
-                    const content = fs.readFileSync(msg.filePath, 'utf-8');
                     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(msg.filePath));
-                    const languageId = doc.languageId;
-
-                    let colorizedHtml: string | undefined;
-                    try {
-                        colorizedHtml = await vscode.commands.executeCommand<string>(
-                            '_workbench.colorize', content, languageId
-                        );
-                    } catch {
-                        // 内部命令不可用时回退到纯文本
-                    }
-
-                    const lines: { num: number; content: string; html?: string }[] = [];
-                    if (colorizedHtml) {
-                        // _workbench.colorize 返回 <div> 包裹的多行 HTML
-                        const lineMatches = colorizedHtml.match(/<div><span[^>]*>.*?<\/span><\/div>/g) || [];
-                        const rawLines = content.split('\n');
-                        for (let i = 0; i < rawLines.length; i++) {
-                            const htmlLine = lineMatches[i];
-                            // 去掉外层 <div><span style="..."> 和 </span></div>
-                            let innerHtml = '';
-                            if (htmlLine) {
-                                innerHtml = htmlLine
-                                    .replace(/^<div>/, '')
-                                    .replace(/<\/div>$/, '');
-                            }
-                            lines.push({ num: i + 1, content: rawLines[i], html: innerHtml || undefined });
-                        }
-                    } else {
-                        const rawLines = content.split('\n');
-                        for (let i = 0; i < rawLines.length; i++) {
-                            lines.push({ num: i + 1, content: rawLines[i] });
-                        }
-                    }
+                    const lines = await tokenizeFile(doc.getText(), doc.languageId);
 
                     const preview: PreviewResponse = {
                         command: 'previewData',
