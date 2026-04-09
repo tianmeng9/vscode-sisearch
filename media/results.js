@@ -50,23 +50,26 @@
             case 'doHighlightSelection': {
                 const sel = window.getSelection();
                 const text = sel ? sel.toString().trim() : '';
-                if (text) {
-                    // 检查是否已经高亮
-                    const existingIndex = manualHighlights.findIndex(h => h.text === text);
-                    if (existingIndex >= 0) {
-                        // 已高亮，移除
-                        manualHighlights.splice(existingIndex, 1);
-                    } else {
-                        // 未高亮，添加
-                        manualHighlights.push({ text, colorIndex: manualHighlights.length });
-                    }
-                    rerenderContent();
-                    syncHighlightsToExtension();
-                }
+                if (text) { toggleHighlight(text); }
+                break;
+            }
+            case 'toggleHighlightText': {
+                if (msg.text) { toggleHighlight(msg.text); }
                 break;
             }
         }
     });
+
+    function toggleHighlight(text) {
+        const existingIndex = manualHighlights.findIndex(h => h.text === text);
+        if (existingIndex >= 0) {
+            manualHighlights.splice(existingIndex, 1);
+        } else {
+            manualHighlights.push({ text: text, colorIndex: manualHighlights.length });
+        }
+        rerenderContent();
+        syncHighlightsToExtension();
+    }
 
     function syncHighlightsToExtension() {
         vscode.postMessage({
@@ -323,13 +326,7 @@
         }
 
         highlightItem.addEventListener('click', function () {
-            if (existingIndex >= 0) {
-                manualHighlights.splice(existingIndex, 1);
-            } else {
-                manualHighlights.push({ text: text, colorIndex: manualHighlights.length });
-            }
-            rerenderContent();
-            syncHighlightsToExtension();
+            toggleHighlight(text);
             removeContextMenu();
         });
 

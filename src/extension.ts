@@ -165,7 +165,16 @@ export function activate(context: vscode.ExtensionContext) {
         }),
 
         vscode.commands.registerCommand('siSearch.highlightSelection', () => {
-            resultsPanel.triggerHighlightSelection();
+            // 优先从编辑器获取选中文本
+            const editor = vscode.window.activeTextEditor;
+            const editorSelection = editor ? editor.document.getText(editor.selection).trim() : '';
+            if (editorSelection) {
+                // 编辑器有选中文本，发送给结果面板进行高亮切换
+                resultsPanel.postMessage({ command: 'toggleHighlightText', text: editorSelection });
+            } else {
+                // 否则让结果面板读取自己的选中文本
+                resultsPanel.triggerHighlightSelection();
+            }
         }),
 
         vscode.commands.registerCommand('siSearch.clearAllHighlights', () => {
