@@ -168,6 +168,7 @@
 
     function showPreviewPopup(data) {
         hoverPreview.innerHTML = '';
+        let targetLineElement = null;
         for (var i = 0; i < data.lines.length; i++) {
             var line = data.lines[i];
             var div = document.createElement('div');
@@ -178,6 +179,9 @@
             div.appendChild(numSpan);
             div.appendChild(document.createTextNode(line.content));
             hoverPreview.appendChild(div);
+            if (line.num === data.lineNumber) {
+                targetLineElement = div;
+            }
         }
 
         // 定位在触发行附近（上方或下方），类似 VS Code 原生 hover
@@ -213,6 +217,17 @@
 
         hoverPreview.style.top = top + 'px';
         hoverPreview.style.left = left + 'px';
+
+        // 滚动到目标行，使其居中显示
+        if (targetLineElement) {
+            setTimeout(() => {
+                var containerHeight = hoverPreview.clientHeight;
+                var elementTop = targetLineElement.offsetTop;
+                var elementHeight = targetLineElement.offsetHeight;
+                var scrollTop = elementTop - (containerHeight / 2) + (elementHeight / 2);
+                hoverPreview.scrollTop = Math.max(0, scrollTop);
+            }, 0);
+        }
     }
 
     // Context menu for manual highlight

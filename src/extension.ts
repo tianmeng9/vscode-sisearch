@@ -109,17 +109,12 @@ export function activate(context: vscode.ExtensionContext) {
                 break;
             }
             case 'requestPreview': {
-                const config = vscode.workspace.getConfiguration('siSearch');
-                const contextLines = config.get<number>('previewContextLines', 5);
                 try {
                     const content = fs.readFileSync(msg.filePath, 'utf-8');
                     const allLines = content.split('\n');
-                    const lineIdx = msg.lineNumber - 1;
-                    const startLine = Math.max(0, lineIdx - contextLines);
-                    const endLine = Math.min(allLines.length - 1, lineIdx + contextLines);
 
                     const lines: { num: number; content: string }[] = [];
-                    for (let i = startLine; i <= endLine; i++) {
+                    for (let i = 0; i < allLines.length; i++) {
                         lines.push({ num: i + 1, content: allLines[i] });
                     }
 
