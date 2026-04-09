@@ -1,122 +1,86 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // shiki 是 ESM-only，需要动态 import
 let shikiModule: any;
 let highlighter: any;
 let initPromise: Promise<void> | undefined;
 let supportedLangs: string[] | undefined;
-let loadedThemes: Set<string> = new Set();
-
-// VS Code 主题名 → Shiki 主题名映射
-const THEME_MAP: Record<string, string> = {
-    // Monokai 系列
-    'monokai': 'monokai',
-    'monokai dimmed': 'monokai',
-    'monokai pro': 'monokai',
-    'monokai pro (filter machine)': 'monokai',
-    'monokai pro (filter octagon)': 'monokai',
-    'monokai pro (filter ristretto)': 'monokai',
-    'monokai pro (filter spectrum)': 'monokai',
-    // VS Code 内置
-    'dark+ (default dark+)': 'dark-plus',
-    'dark+': 'dark-plus',
-    'dark (visual studio)': 'dark-plus',
-    'visual studio dark': 'dark-plus',
-    'default dark+': 'dark-plus',
-    'default dark modern': 'dark-plus',
-    'light+ (default light+)': 'light-plus',
-    'light+': 'light-plus',
-    'light (visual studio)': 'light-plus',
-    'visual studio light': 'light-plus',
-    'default light+': 'light-plus',
-    'default light modern': 'light-plus',
-    // Dracula
-    'dracula': 'dracula',
-    'dracula soft': 'dracula-soft',
-    // One Dark
-    'one dark pro': 'one-dark-pro',
-    'atom one dark': 'one-dark-pro',
-    'one dark pro darker': 'one-dark-pro',
-    'one dark pro mix': 'one-dark-pro',
-    // Nord
-    'nord': 'nord',
-    // Solarized
-    'solarized dark': 'solarized-dark',
-    'solarized light': 'solarized-light',
-    // Material
-    'material theme': 'material-theme',
-    'material theme darker': 'material-theme-darker',
-    'material theme lighter': 'material-theme-lighter',
-    'material theme ocean': 'material-theme-ocean',
-    'material theme palenight': 'material-theme-palenight',
-    // Night Owl
-    'night owl': 'night-owl',
-    'night owl light': 'night-owl-light',
-    // Rose Pine
-    'rosé pine': 'rose-pine',
-    'rosé pine dawn': 'rose-pine-dawn',
-    'rosé pine moon': 'rose-pine-moon',
-    // Tokyo Night
-    'tokyo night': 'tokyo-night',
-    // Catppuccin
-    'catppuccin mocha': 'catppuccin-mocha',
-    'catppuccin macchiato': 'catppuccin-macchiato',
-    'catppuccin frappé': 'catppuccin-frappe',
-    'catppuccin latte': 'catppuccin-latte',
-    // Vitesse
-    'vitesse dark': 'vitesse-dark',
-    'vitesse light': 'vitesse-light',
-    // Ayu
-    'ayu dark': 'ayu-dark',
-    'ayu light': 'ayu-light',
-    'ayu mirage': 'ayu-mirage',
-    // Gruvbox
-    'gruvbox dark medium': 'gruvbox-dark-medium',
-    'gruvbox dark hard': 'gruvbox-dark-hard',
-    'gruvbox light medium': 'gruvbox-light-medium',
-    'gruvbox light hard': 'gruvbox-light-hard',
-    // GitHub
-    'github dark': 'github-dark',
-    'github dark default': 'github-dark-default',
-    'github dark dimmed': 'github-dark-dimmed',
-    'github light': 'github-light',
-    'github light default': 'github-light-default',
-};
-
-// 所有可能用到的 Shiki 主题名（去重）
-const ALL_SHIKI_THEMES = [...new Set(Object.values(THEME_MAP))];
+let currentThemeId: string | undefined;
 
 async function loadShiki(): Promise<any> {
     if (shikiModule) { return shikiModule; }
-    // 使用 Function 构造器绕过 TypeScript 将 import() 编译为 require()
     const dynamicImport = new Function('specifier', 'return import(specifier)');
     shikiModule = await dynamicImport('shiki');
     supportedLangs = Object.keys(shikiModule.bundledLanguages);
     return shikiModule;
 }
 
-function getShikiTheme(): string {
-    const colorTheme = vscode.workspace.getConfiguration('workbench').get<string>('colorTheme', '');
-    const normalized = colorTheme.toLowerCase().trim();
+/**
+ * 从 VS Code 已安装的扩展中查找当前主题的 JSON 文件，
+ * 读取并构造一个 Shiki 兼容的自定义主题对象。
+ */
+function loadVSCodeThemeData(): any | undefined {
+    const themeName = vscode.workspace.getConfiguration('workbench').get<string>('colorTheme', '');
+    if (!themeName) { return undefined; }
 
-    // 精确匹配
-    if (THEME_MAP[normalized]) {
-        return THEME_MAP[normalized];
-    }
+    // 遍历所有扩展，找到定义了该主题的扩展
+    for (const ext of vscode.extensions.all) {
+        const contributes = ext.packageJSON?.contributes;
+        if (!contributes?.themes) { continue; }
 
-    // 模糊匹配：检查主题名是否包含某个关键词
-    for (const [key, value] of Object.entries(THEME_MAP)) {
-        if (normalized.includes(key) || key.includes(normalized)) {
-            return value;
+        for (const themeDef of contributes.themes) {
+            const label: string = themeDef.label || themeDef.id || '';
+            if (label.toLowerCase() !== themeName.toLowerCase() &&
+                (themeDef.id || '').toLowerCase() !== themeName.toLowerCase()) {
+                continue;
+            }
+
+            // 找到了匹配的主题定义
+            const themePath = path.join(ext.extensionPath, themeDef.path);
+            try {
+                const raw = fs.readFileSync(themePath, 'utf-8');
+                // 处理 JSONC（去掉注释）
+                const cleaned = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+                const themeData = JSON.parse(cleaned);
+                return themeData;
+            } catch {
+                return undefined;
+            }
         }
     }
+    return undefined;
+}
 
-    // 回退到 dark/light
-    const kind = vscode.window.activeColorTheme?.kind;
-    if (kind === 1 || kind === 4) {
-        return 'light-plus';
-    }
-    return 'dark-plus';
+/**
+ * 将 VS Code 主题 JSON 转换为 Shiki 自定义主题格式
+ */
+function convertToShikiTheme(themeData: any, themeName: string): any {
+    const colors = themeData.colors || {};
+    const tokenColors = themeData.tokenColors || [];
+    const type = themeData.type || 'dark';
+
+    return {
+        name: 'vscode-current-theme',
+        type,
+        bg: colors['editor.background'] || (type === 'dark' ? '#1e1e1e' : '#ffffff'),
+        fg: colors['editor.foreground'] || (type === 'dark' ? '#d4d4d4' : '#333333'),
+        settings: [
+            // 默认前景/背景
+            {
+                settings: {
+                    foreground: colors['editor.foreground'] || (type === 'dark' ? '#d4d4d4' : '#333333'),
+                    background: colors['editor.background'] || (type === 'dark' ? '#1e1e1e' : '#ffffff'),
+                }
+            },
+            // 原始 tokenColors
+            ...tokenColors.map((tc: any) => ({
+                scope: tc.scope,
+                settings: tc.settings || {},
+            })),
+        ],
+    };
 }
 
 async function ensureHighlighter(): Promise<any> {
@@ -124,17 +88,43 @@ async function ensureHighlighter(): Promise<any> {
     if (!initPromise) {
         initPromise = (async () => {
             const shiki = await loadShiki();
-            // 初始化时加载 dark-plus 和 light-plus 作为基础回退
+            // 用一个 fallback 主题初始化
             highlighter = await shiki.createHighlighter({
-                themes: ['dark-plus', 'light-plus'],
+                themes: ['dark-plus'],
                 langs: [],
             });
-            loadedThemes.add('dark-plus');
-            loadedThemes.add('light-plus');
         })();
     }
     await initPromise;
     return highlighter;
+}
+
+/**
+ * 确保当前主题已加载到 highlighter
+ */
+async function ensureCurrentTheme(): Promise<string> {
+    const themeName = vscode.workspace.getConfiguration('workbench').get<string>('colorTheme', '');
+
+    if (currentThemeId === themeName && highlighter) {
+        return 'vscode-current-theme';
+    }
+
+    const themeData = loadVSCodeThemeData();
+    if (themeData) {
+        const shikiTheme = convertToShikiTheme(themeData, themeName);
+        const hl = await ensureHighlighter();
+        try {
+            await hl.loadTheme(shikiTheme);
+            currentThemeId = themeName;
+            return 'vscode-current-theme';
+        } catch (e) {
+            console.error('[SI Search] Failed to load custom theme:', e);
+        }
+    }
+
+    // 回退到 dark-plus
+    currentThemeId = undefined;
+    return 'dark-plus';
 }
 
 function mapLanguageId(languageId: string): string | undefined {
@@ -187,61 +177,45 @@ export async function tokenizeFile(
             await hl.loadLanguage(lang);
         }
 
-        // 按需加载主题
-        const theme = getShikiTheme();
-        if (!loadedThemes.has(theme)) {
-            try {
-                await hl.loadTheme(theme);
-                loadedThemes.add(theme);
-            } catch {
-                // 主题加载失败，回退
-                const kind = vscode.window.activeColorTheme?.kind;
-                return doTokenize(hl, fileContent, lang, (kind === 1 || kind === 4) ? 'light-plus' : 'dark-plus', rawLines);
-            }
-        }
+        // 加载当前 VS Code 主题
+        const theme = await ensureCurrentTheme();
 
-        return doTokenize(hl, fileContent, lang, theme, rawLines);
+        const { tokens: tokenLines, bg } = hl.codeToTokens(fileContent, { lang, theme });
+
+        // 读取空白字符显示配置
+        const renderWhitespace = vscode.workspace.getConfiguration('editor').get<string>('renderWhitespace', 'selection');
+        const showWhitespace = renderWhitespace === 'all' || renderWhitespace === 'boundary';
+
+        const result: TokenizedLine[] = [];
+        for (let i = 0; i < rawLines.length; i++) {
+            const lineTokens = tokenLines[i];
+            if (!lineTokens || lineTokens.length === 0) {
+                result.push({ num: i + 1, content: rawLines[i] });
+                continue;
+            }
+
+            let html = '';
+            for (const token of lineTokens) {
+                let escaped = escapeHtml(token.content);
+                if (showWhitespace) {
+                    escaped = renderWhitespaceChars(escaped);
+                }
+                if (token.color) {
+                    html += `<span style="color:${token.color}">${escaped}</span>`;
+                } else {
+                    html += escaped;
+                }
+            }
+            result.push({ num: i + 1, content: rawLines[i], html });
+        }
+        return { lines: result, bg };
     } catch (e) {
         console.error('[SI Search] tokenize error:', e);
         return { lines: rawLines.map((content, i) => ({ num: i + 1, content })) };
     }
 }
 
-function doTokenize(hl: any, fileContent: string, lang: string, theme: string, rawLines: string[]): TokenizeResult {
-    const { tokens: tokenLines, bg, fg } = hl.codeToTokens(fileContent, { lang, theme });
-
-    // 读取空白字符显示配置
-    const renderWhitespace = vscode.workspace.getConfiguration('editor').get<string>('renderWhitespace', 'selection');
-    const showWhitespace = renderWhitespace === 'all' || renderWhitespace === 'boundary';
-
-    const result: TokenizedLine[] = [];
-    for (let i = 0; i < rawLines.length; i++) {
-        const lineTokens = tokenLines[i];
-        if (!lineTokens || lineTokens.length === 0) {
-            result.push({ num: i + 1, content: rawLines[i] });
-            continue;
-        }
-
-        let html = '';
-        for (const token of lineTokens) {
-            let escaped = escapeHtml(token.content);
-            if (showWhitespace) {
-                escaped = renderWhitespaceChars(escaped);
-            }
-            if (token.color) {
-                html += `<span style="color:${token.color}">${escaped}</span>`;
-            } else {
-                html += escaped;
-            }
-        }
-        result.push({ num: i + 1, content: rawLines[i], html });
-    }
-    return { lines: result, bg };
-}
-
 function renderWhitespaceChars(html: string): string {
-    // 用可见符号替换 tab 和 space，使用淡色样式
-    // → 表示 tab，· 表示 space
     html = html.replace(/\t/g, '<span class="whitespace-char">→\t</span>');
     html = html.replace(/ /g, '<span class="whitespace-char">·</span>');
     return html;
