@@ -1,0 +1,112 @@
+body {
+    padding: 8px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    color: var(--vscode-foreground);
+}
+
+.search-input-row {
+    margin-bottom: 6px;
+}
+
+#searchInput {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    outline: none;
+}
+
+#searchInput:focus {
+    border-color: var(--vscode-focusBorder);
+}
+
+.search-options {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 11px;
+}
+
+.search-options label {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    cursor: pointer;
+}
+
+.search-actions {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+}
+
+.search-actions button {
+    flex: 1;
+    padding: 4px 8px;
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.search-actions button:hover {
+    background: var(--vscode-button-hoverBackground);
+}
+
+.history-header {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 4px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+}
+
+.history-item {
+    padding: 4px 8px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-radius: 3px;
+}
+
+.history-item:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.history-item.active {
+    background: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+}
+
+.history-item .query {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+.history-item .count {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    margin-left: 8px;
+}
+
+.history-item .delete-btn {
+    display: none;
+    background: none;
+    border: none;
+    color: var(--vscode-descriptionForeground);
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 14px;
+}
+
+.history-item:hover .delete-btn {
+    display: inline;
+}
