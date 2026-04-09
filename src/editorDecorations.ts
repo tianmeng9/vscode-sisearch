@@ -60,8 +60,10 @@ export class EditorDecorations {
 
                 // 关键字高亮
                 if (result.matchStart >= 0 && result.matchLength > 0) {
+                    const lineLen = editor.document.lineAt(lineIdx).text.length;
+                    const endCol = Math.min(result.matchStart + result.matchLength, lineLen);
                     const startPos = new vscode.Position(lineIdx, result.matchStart);
-                    const endPos = new vscode.Position(lineIdx, result.matchStart + result.matchLength);
+                    const endPos = new vscode.Position(lineIdx, endCol);
                     keywordRanges.push({ range: new vscode.Range(startPos, endPos) });
                 }
 
