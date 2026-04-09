@@ -59,7 +59,8 @@ export type ResultsPanelMessage =
     | { command: 'jumpToFile'; filePath: string; lineNumber: number }
     | { command: 'requestPreview'; filePath: string; lineNumber: number }
     | { command: 'highlightText'; text: string }
-    | { command: 'clearAllHighlights' };
+    | { command: 'clearAllHighlights' }
+    | { command: 'syncManualHighlights'; highlights: { text: string; color: string }[]; boxMode: boolean };
 
 /** A single entry rendered in the results panel */
 export interface ResultsPanelEntry {

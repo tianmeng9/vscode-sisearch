@@ -61,11 +61,23 @@
                         manualHighlights.push({ text, colorIndex: manualHighlights.length });
                     }
                     rerenderContent();
+                    syncHighlightsToExtension();
                 }
                 break;
             }
         }
     });
+
+    function syncHighlightsToExtension() {
+        vscode.postMessage({
+            command: 'syncManualHighlights',
+            highlights: manualHighlights.map(function (h) {
+                var colorIdx = h.colorIndex % (HIGHLIGHT_COLORS.length || 1);
+                return { text: h.text, color: HIGHLIGHT_COLORS[colorIdx] || '#FFEB3B' };
+            }),
+            boxMode: highlightBoxMode,
+        });
+    }
 
     function rerenderContent() {
         resultsList.innerHTML = '';
@@ -158,6 +170,33 @@
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
+    // 对已有语法高亮 HTML 叠加手动高亮
+    // 只替换 HTML 标签之外的文本部分，避免破坏 <span> 标签
+    function applyManualHighlightsToHtml(html) {
+        if (manualHighlights.length === 0) { return html; }
+
+        for (let i = manualHighlights.length - 1; i >= 0; i--) {
+            const h = manualHighlights[i];
+            const colorIdx = h.colorIndex % (HIGHLIGHT_COLORS.length || 1);
+            const color = HIGHLIGHT_COLORS[colorIdx] || '#FFEB3B';
+            const escaped = escapeHtml(h.text);
+            var style = highlightBoxMode
+                ? 'border-color:' + color + ';background:inherit;color:inherit'
+                : 'background:' + color + ';color:#1e1e1e;border-color:transparent';
+            var wrapStart = '<span class="manual-highlight" style="' + style + '">';
+            var wrapEnd = '</span>';
+
+            // 分离 HTML 标签和文本节点
+            // 只在文本节点中做替换
+            var regex = new RegExp(escapeRegex(escaped), 'gi');
+            html = html.replace(/(<[^>]*>)|([^<]+)/g, function (match, tag, text) {
+                if (tag) { return tag; }
+                return text.replace(regex, wrapStart + '$&' + wrapEnd);
+            });
+        }
+        return html;
+    }
+
     function highlightNavEntry(index) {
         document.querySelectorAll('.result-line.nav-active').forEach(function (el) {
             el.classList.remove('nav-active');
@@ -200,10 +239,13 @@
             if (line.html) {
                 var codeSpan = document.createElement('span');
                 codeSpan.className = 'preview-line-code';
-                codeSpan.innerHTML = line.html;
+                codeSpan.innerHTML = applyManualHighlightsToHtml(line.html);
                 div.appendChild(codeSpan);
             } else {
-                div.appendChild(document.createTextNode(line.content));
+                var codeSpan2 = document.createElement('span');
+                codeSpan2.className = 'preview-line-code';
+                codeSpan2.innerHTML = highlightContent(line.content);
+                div.appendChild(codeSpan2);
             }
             hoverPreview.appendChild(div);
             if (line.num === data.lineNumber) {
@@ -287,6 +329,7 @@
                 manualHighlights.push({ text: text, colorIndex: manualHighlights.length });
             }
             rerenderContent();
+            syncHighlightsToExtension();
             removeContextMenu();
         });
 

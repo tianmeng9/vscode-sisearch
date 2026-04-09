@@ -130,6 +130,13 @@ export function activate(context: vscode.ExtensionContext) {
                 editorDecorations.clearDecorations();
                 break;
             }
+            case 'syncManualHighlights': {
+                editorDecorations.updateManualHighlights(
+                    msg.highlights || [],
+                    msg.boxMode !== false,
+                );
+                break;
+            }
         }
     });
 
