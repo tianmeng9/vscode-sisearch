@@ -90,8 +90,11 @@ body {
 }
 
 .manual-highlight {
-    border-radius: 2px;
-    padding: 0 1px;
+    border-radius: 3px;
+    padding: 1px 3px;
+    border-width: 2px;
+    border-style: solid;
+    font-weight: 500;
 }
 
 .hover-preview {

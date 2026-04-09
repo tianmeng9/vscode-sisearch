@@ -137,7 +137,7 @@
             const color = HIGHLIGHT_COLORS[colorIdx] || '#FFEB3B';
             const escaped = escapeHtml(h.text);
             const regex = new RegExp(escapeRegex(escaped), 'gi');
-            html = html.replace(regex, '<span class="manual-highlight" style="background:' + color + '">' + escaped + '</span>');
+            html = html.replace(regex, '<span class="manual-highlight" style="border-color:' + color + ';background:inherit;color:inherit">' + escaped + '</span>');
         }
 
         return html;

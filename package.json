@@ -68,7 +68,7 @@
         },
         "siSearch.highlightColors": {
           "type": "array",
-          "default": ["#FFEB3B", "#4CAF50", "#2196F3", "#FF5722", "#9C27B0", "#00BCD4"],
+          "default": ["cyan", "pink", "lightgreen", "magenta", "cornflowerblue", "orange", "green", "red"],
           "description": "Colors for manual highlight marking"
         },
         "siSearch.navigationWrap": {
