@@ -117,6 +117,12 @@ body {
 .hover-preview .preview-line {
     white-space: pre;
     line-height: 1.5;
+    display: flex;
+}
+
+.hover-preview .preview-line-code {
+    flex: 1;
+    white-space: pre;
 }
 
 .hover-preview .preview-line.current {

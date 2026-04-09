@@ -39,8 +39,7 @@ export class ResultsPanel {
             this.panel = undefined;
         });
 
-        const colors = vscode.workspace.getConfiguration('siSearch').get<string[]>('highlightColors', []);
-        this.postMessage({ command: 'setHighlightColors', colors });
+        this.sendHighlightConfig();
     }
 
     hide(): void {
@@ -57,8 +56,10 @@ export class ResultsPanel {
 
     showResults(results: ResultsPanelEntry[], query: string): void {
         this.show();
-        const colors = vscode.workspace.getConfiguration('siSearch').get<string[]>('highlightColors', []);
-        this.postMessage({ command: 'showResults', results, query, highlightColors: colors });
+        const config = vscode.workspace.getConfiguration('siSearch');
+        const colors = config.get<string[]>('highlightColors', []);
+        const box = config.get<boolean>('highlightBox', true);
+        this.postMessage({ command: 'showResults', results, query, highlightColors: colors, highlightBox: box });
     }
 
     appendResults(results: ResultsPanelEntry[], query: string): void {
@@ -76,6 +77,13 @@ export class ResultsPanel {
 
     triggerHighlightSelection(): void {
         this.postMessage({ command: 'doHighlightSelection' });
+    }
+
+    private sendHighlightConfig(): void {
+        const config = vscode.workspace.getConfiguration('siSearch');
+        const colors = config.get<string[]>('highlightColors', []);
+        const box = config.get<boolean>('highlightBox', true);
+        this.postMessage({ command: 'setHighlightColors', colors, box });
     }
 
     postMessage(msg: unknown): void {

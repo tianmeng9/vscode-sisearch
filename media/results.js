@@ -11,6 +11,7 @@
     let isMouseInPreview = false;
     let manualHighlights = [];
     const HIGHLIGHT_COLORS = [];
+    let highlightBoxMode = true;
     let contextMenu = null;
 
     btnClearHighlights.addEventListener('click', () => {
@@ -26,6 +27,7 @@
                 allEntries = msg.results;
                 HIGHLIGHT_COLORS.length = 0;
                 if (msg.highlightColors) { HIGHLIGHT_COLORS.push(...msg.highlightColors); }
+                if (msg.highlightBox !== undefined) { highlightBoxMode = msg.highlightBox; }
                 manualHighlights = [];
                 rerenderContent();
                 break;
@@ -42,6 +44,8 @@
             case 'setHighlightColors':
                 HIGHLIGHT_COLORS.length = 0;
                 HIGHLIGHT_COLORS.push(...msg.colors);
+                if (msg.box !== undefined) { highlightBoxMode = msg.box; }
+                rerenderContent();
                 break;
             case 'doHighlightSelection': {
                 const sel = window.getSelection();
@@ -137,7 +141,10 @@
             const color = HIGHLIGHT_COLORS[colorIdx] || '#FFEB3B';
             const escaped = escapeHtml(h.text);
             const regex = new RegExp(escapeRegex(escaped), 'gi');
-            html = html.replace(regex, '<span class="manual-highlight" style="border-color:' + color + ';background:inherit;color:inherit">' + escaped + '</span>');
+            var style = highlightBoxMode
+                ? 'border-color:' + color + ';background:inherit;color:inherit'
+                : 'background:' + color + ';color:#1e1e1e;border-color:transparent';
+            html = html.replace(regex, '<span class="manual-highlight" style="' + style + '">' + escaped + '</span>');
         }
 
         return html;
@@ -185,7 +192,14 @@
             numSpan.className = 'preview-line-num';
             numSpan.textContent = String(line.num);
             div.appendChild(numSpan);
-            div.appendChild(document.createTextNode(line.content));
+            if (line.html) {
+                var codeSpan = document.createElement('span');
+                codeSpan.className = 'preview-line-code';
+                codeSpan.innerHTML = line.html;
+                div.appendChild(codeSpan);
+            } else {
+                div.appendChild(document.createTextNode(line.content));
+            }
             hoverPreview.appendChild(div);
             if (line.num === data.lineNumber) {
                 targetLineElement = div;

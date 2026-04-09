@@ -44,8 +44,8 @@
       { "command": "siSearch.toggleResultsPanel", "key": "ctrl+shift+/", "mac": "cmd+shift+/" },
       { "command": "siSearch.nextResult", "key": "f3" },
       { "command": "siSearch.previousResult", "key": "shift+f3" },
-      { "command": "siSearch.highlightSelection", "key": "alt+h" },
-      { "command": "siSearch.clearAllHighlights", "key": "alt+shift+h" },
+      { "command": "siSearch.highlightSelection", "key": "f8" },
+      { "command": "siSearch.clearAllHighlights", "key": "shift+f8" },
       { "command": "siSearch.jumpToResult", "key": "alt+j", "when": "editorTextFocus" }
     ],
     "configuration": {
@@ -70,6 +70,11 @@
           "type": "array",
           "default": ["cyan", "pink", "lightgreen", "magenta", "cornflowerblue", "orange", "green", "red"],
           "description": "Colors for manual highlight marking"
+        },
+        "siSearch.highlightBox": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, highlights use border-only box style; when false, highlights use background fill"
         },
         "siSearch.navigationWrap": {
           "type": "boolean",

@@ -78,5 +78,5 @@ export type PreviewResponse = {
     command: 'previewData';
     filePath: string;
     lineNumber: number;
-    lines: { num: number; content: string }[];
+    lines: { num: number; content: string; html?: string }[];
 };
