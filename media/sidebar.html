@@ -7,28 +7,15 @@
     <link rel="stylesheet" href="{{cssUri}}">
 </head>
 <body>
-    <div class="search-container">
-        <div class="search-input-row">
-            <input type="text" id="searchInput" placeholder="Search..." />
-        </div>
-        <div class="search-options">
-            <label><input type="checkbox" id="optCase" /> Case</label>
-            <label><input type="checkbox" id="optWord" /> Word</label>
-            <label><input type="checkbox" id="optRegex" /> Regex</label>
-        </div>
-        <div class="search-actions">
-            <button id="btnAppend" title="Append results">Append</button>
-            <button id="btnReplace" title="Replace results">Replace</button>
+    <div class="search-row">
+        <input type="text" id="searchInput" placeholder="Search..." />
+        <div class="toggle-buttons">
+            <button id="optCase" class="toggle-btn" title="Match Case">Aa</button>
+            <button id="optWord" class="toggle-btn" title="Match Whole Word">Ab</button>
+            <button id="optRegex" class="toggle-btn" title="Use Regular Expression">.*</button>
         </div>
     </div>
-    <div class="section-container">
-        <div class="section-header">Search History</div>
-        <div id="historyList"></div>
-    </div>
-    <div class="section-container">
-        <div class="section-header">Highlights</div>
-        <div id="highlightList"></div>
-    </div>
+    <div id="historyList"></div>
     <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
 </body>
 </html>

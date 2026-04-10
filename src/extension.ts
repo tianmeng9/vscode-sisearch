@@ -5,10 +5,14 @@ import { SidebarProvider } from './sidebarProvider';
 import { ResultsPanel } from './resultsPanel';
 import { EditorDecorations } from './editorDecorations';
 import { SearchResultCodeLensProvider } from './codeLensProvider';
-import { executeSearch } from './searchEngine';
+import { executeSearchWithIndex } from './searchEngine';
 import { navigateNext, navigatePrevious, openResultInEditor } from './navigation';
 import { SidebarMessage, SearchResult, PreviewResponse } from './types';
 import { tokenizeFile } from './syntaxHighlight';
+import { HighlightsTreeProvider } from './highlightsTreeProvider';
+import { SymbolIndex } from './symbolIndex';
+import { FileWatcher } from './fileWatcher';
+import { initParser, disposeParser } from './symbolParser';
 
 export function activate(context: vscode.ExtensionContext) {
     const store = new SearchStore();
@@ -16,6 +20,36 @@ export function activate(context: vscode.ExtensionContext) {
     const resultsPanel = new ResultsPanel(context.extensionUri);
     const editorDecorations = new EditorDecorations(context.extensionUri);
     const codeLensProvider = new SearchResultCodeLensProvider(store);
+    const highlightsTreeProvider = new HighlightsTreeProvider();
+
+    // Symbol index & file watcher
+    const symbolIndex = new SymbolIndex();
+    let fileWatcher: FileWatcher | undefined;
+
+    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+    statusBarItem.command = 'siSearch.syncIndex';
+    updateStatusBar(statusBarItem, symbolIndex);
+    statusBarItem.show();
+    context.subscriptions.push(statusBarItem);
+
+    // Try to restore index from disk & init file watcher
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (workspaceRoot) {
+        symbolIndex.loadFromDisk(workspaceRoot).then(loaded => {
+            if (loaded) { updateStatusBar(statusBarItem, symbolIndex); }
+        });
+
+        const config = vscode.workspace.getConfiguration('siSearch');
+        const extensions = config.get<string[]>('includeFileExtensions', ['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl']);
+        fileWatcher = new FileWatcher(symbolIndex, workspaceRoot, extensions);
+        context.subscriptions.push(fileWatcher);
+
+        // Watch for status changes from file watcher
+        const statusTimer = setInterval(() => {
+            updateStatusBar(statusBarItem, symbolIndex);
+        }, 2000);
+        context.subscriptions.push({ dispose: () => clearInterval(statusTimer) });
+    }
 
     // 注册侧边栏 webview provider
     context.subscriptions.push(
@@ -24,6 +58,11 @@ export function activate(context: vscode.ExtensionContext) {
             sidebarProvider,
             { webviewOptions: { retainContextWhenHidden: true } }
         )
+    );
+
+    // 注册 Highlights TreeView
+    context.subscriptions.push(
+        vscode.window.registerTreeDataProvider('siSearch.highlightsView', highlightsTreeProvider)
     );
 
     // 注册 CodeLens Provider（用于源文件中的"跳转回结果"链接）
@@ -51,8 +90,8 @@ export function activate(context: vscode.ExtensionContext) {
                 sidebarProvider.postMessage({ command: 'searchStarted' });
 
                 try {
-                    const results = await executeSearch(
-                        msg.query, workspaceRoot, msg.options, extensions, excludes
+                    const results = await executeSearchWithIndex(
+                        msg.query, workspaceRoot, msg.options, extensions, excludes, symbolIndex
                     );
 
                     store.addSearch(msg.query, msg.options, results, msg.mode);
@@ -86,6 +125,12 @@ export function activate(context: vscode.ExtensionContext) {
                 editorDecorations.updateResults(store.getActiveResults());
                 break;
             }
+            case 'clearAllHighlights': {
+                resultsPanel.postMessage({ command: 'clearHighlights' });
+                editorDecorations.clearDecorations();
+                highlightsTreeProvider.update([]);
+                break;
+            }
         }
     });
 
@@ -108,6 +153,7 @@ export function activate(context: vscode.ExtensionContext) {
                 try {
                     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(msg.filePath));
                     const result = await tokenizeFile(doc.getText(), doc.languageId);
+                    const tabSize = vscode.workspace.getConfiguration('editor', doc.uri).get<number>('tabSize', 4);
 
                     const preview: PreviewResponse = {
                         command: 'previewData',
@@ -115,6 +161,7 @@ export function activate(context: vscode.ExtensionContext) {
                         lineNumber: msg.lineNumber,
                         lines: result.lines,
                         bg: result.bg,
+                        tabSize,
                     };
                     resultsPanel.sendPreviewData(preview);
                 } catch {
@@ -124,10 +171,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
             case 'clearAllHighlights': {
                 editorDecorations.clearDecorations();
-                sidebarProvider.postMessage({
-                    command: 'updateHighlights',
-                    highlights: [],
-                });
+                highlightsTreeProvider.update([]);
                 break;
             }
             case 'syncManualHighlights': {
@@ -136,10 +180,7 @@ export function activate(context: vscode.ExtensionContext) {
                     highlights,
                     msg.boxMode !== false,
                 );
-                sidebarProvider.postMessage({
-                    command: 'updateHighlights',
-                    highlights,
-                });
+                highlightsTreeProvider.update(highlights);
                 break;
             }
         }
@@ -170,14 +211,11 @@ export function activate(context: vscode.ExtensionContext) {
         }),
 
         vscode.commands.registerCommand('siSearch.highlightSelection', () => {
-            // 优先从编辑器获取选中文本
             const editor = vscode.window.activeTextEditor;
             const editorSelection = editor ? editor.document.getText(editor.selection).trim() : '';
             if (editorSelection) {
-                // 编辑器有选中文本，发送给结果面板进行高亮切换
                 resultsPanel.postMessage({ command: 'toggleHighlightText', text: editorSelection });
             } else {
-                // 否则让结果面板读取自己的选中文本
                 resultsPanel.triggerHighlightSelection();
             }
         }),
@@ -185,6 +223,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('siSearch.clearAllHighlights', () => {
             resultsPanel.postMessage({ command: 'clearHighlights' });
             editorDecorations.clearDecorations();
+            highlightsTreeProvider.update([]);
         }),
 
         vscode.commands.registerCommand('siSearch.jumpToResult', () => {
@@ -201,6 +240,75 @@ export function activate(context: vscode.ExtensionContext) {
                 resultsPanel.highlightEntry(idx);
                 resultsPanel.show();
             }
+        }),
+
+        // 清除搜索结果（同时清除左侧历史和搜索关键字）
+        vscode.commands.registerCommand('siSearch.clearResults', () => {
+            store.clearAll();
+            updateSidebarHistory(store, sidebarProvider);
+            sidebarProvider.postMessage({ command: 'clearSearch' });
+            resultsPanel.showResults([], '');
+            editorDecorations.updateResults([]);
+        }),
+
+        // 移除单个高亮
+        vscode.commands.registerCommand('siSearch.removeHighlight', (item: any) => {
+            const text = item?.entry?.text;
+            if (!text) { return; }
+            resultsPanel.postMessage({ command: 'toggleHighlightText', text });
+        }),
+
+        // Sync symbol index
+        vscode.commands.registerCommand('siSearch.syncIndex', async () => {
+            const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!wsRoot) {
+                vscode.window.showWarningMessage('SI Search: No workspace folder open');
+                return;
+            }
+
+            try {
+                await initParser(context.extensionPath);
+            } catch (err: any) {
+                const msg = err?.stack || err?.message || String(err);
+                console.error('SI Search: initParser failed:', msg);
+                vscode.window.showErrorMessage(`SI Search: Failed to init parser: ${msg}`);
+                return;
+            }
+
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'SI Search: Synchronizing symbols...',
+                cancellable: true,
+            }, async (progress, token) => {
+                const cfg = vscode.workspace.getConfiguration('siSearch');
+                const exts = cfg.get<string[]>('includeFileExtensions', ['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl']);
+                const excl = cfg.get<string[]>('excludePatterns', ['**/build/**', '**/.git/**', '**/node_modules/**']);
+
+                updateStatusBar(statusBarItem, symbolIndex);
+
+                await symbolIndex.synchronize(wsRoot, exts, excl, token, (p) => {
+                    if (p.phase === 'scanning') {
+                        progress.report({ message: 'Scanning files...' });
+                    } else if (p.phase === 'parsing') {
+                        progress.report({ message: `Parsing ${p.current}/${p.total}: ${p.currentFile || ''}`, increment: (1 / Math.max(p.total, 1)) * 100 });
+                    } else {
+                        progress.report({ message: 'Saving index...' });
+                    }
+                });
+
+                updateStatusBar(statusBarItem, symbolIndex);
+                const stats = symbolIndex.getStats();
+                vscode.window.showInformationMessage(`SI Search: Indexed ${stats.symbols} symbols in ${stats.files} files`);
+            });
+        }),
+
+        // Clear symbol index
+        vscode.commands.registerCommand('siSearch.clearIndex', () => {
+            const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            symbolIndex.clear();
+            if (wsRoot) { symbolIndex.clearDisk(wsRoot); }
+            updateStatusBar(statusBarItem, symbolIndex);
+            vscode.window.showInformationMessage('SI Search: Symbol index cleared');
         })
     );
 
@@ -222,4 +330,32 @@ function updateSidebarHistory(store: SearchStore, sidebar: SidebarProvider): voi
     });
 }
 
-export function deactivate() {}
+function updateStatusBar(item: vscode.StatusBarItem, index: SymbolIndex): void {
+    const status = index.status;
+    switch (status) {
+        case 'none':
+            item.text = '$(database) Index: None';
+            item.tooltip = 'Click to synchronize symbol index';
+            break;
+        case 'building':
+            item.text = '$(sync~spin) Index: Syncing...';
+            item.tooltip = 'Symbol index is being built';
+            break;
+        case 'ready': {
+            const stats = index.getStats();
+            item.text = `$(database) ${stats.symbols.toLocaleString()} symbols`;
+            item.tooltip = `SI Search: ${stats.symbols} symbols in ${stats.files} files (click to re-sync)`;
+            break;
+        }
+        case 'stale': {
+            const stats = index.getStats();
+            item.text = `$(database) ${stats.symbols.toLocaleString()} symbols (stale)`;
+            item.tooltip = 'Index is stale — click to re-sync';
+            break;
+        }
+    }
+}
+
+export function deactivate() {
+    disposeParser();
+}

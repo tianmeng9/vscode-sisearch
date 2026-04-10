@@ -5,50 +5,49 @@
     const optCase = document.getElementById('optCase');
     const optWord = document.getElementById('optWord');
     const optRegex = document.getElementById('optRegex');
-    const btnAppend = document.getElementById('btnAppend');
-    const btnReplace = document.getElementById('btnReplace');
     const historyList = document.getElementById('historyList');
-    const highlightList = document.getElementById('highlightList');
+
+    function setupToggle(btn) {
+        btn.addEventListener('click', () => {
+            btn.classList.toggle('active');
+        });
+    }
+    setupToggle(optCase);
+    setupToggle(optWord);
+    setupToggle(optRegex);
 
     function getOptions() {
         return {
-            caseSensitive: optCase.checked,
-            wholeWord: optWord.checked,
-            regex: optRegex.checked,
+            caseSensitive: optCase.classList.contains('active'),
+            wholeWord: optWord.classList.contains('active'),
+            regex: optRegex.classList.contains('active'),
         };
     }
 
-    function doSearch(mode) {
-        const query = searchInput.value.trim();
-        if (!query) { return; }
-        vscode.postMessage({ command: 'search', query, options: getOptions(), mode });
-    }
-
-    btnAppend.addEventListener('click', () => doSearch('append'));
-    btnReplace.addEventListener('click', () => doSearch('replace'));
-
     searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-            doSearch('replace');
+            const query = searchInput.value.trim();
+            if (!query) { return; }
+            const mode = e.shiftKey ? 'append' : 'replace';
+            vscode.postMessage({ command: 'search', query, options: getOptions(), mode });
         }
     });
 
     window.addEventListener('message', (event) => {
         const msg = event.data;
         switch (msg.command) {
+            case 'searchStarted':
+                searchInput.disabled = true;
+                break;
+            case 'searchComplete':
+                searchInput.disabled = false;
+                searchInput.focus();
+                break;
             case 'updateHistory':
                 renderHistory(msg.entries);
                 break;
-            case 'searchStarted':
-                btnAppend.disabled = true;
-                btnReplace.disabled = true;
-                break;
-            case 'searchComplete':
-                btnAppend.disabled = false;
-                btnReplace.disabled = false;
-                break;
-            case 'updateHighlights':
-                renderHighlights(msg.highlights);
+            case 'clearSearch':
+                searchInput.value = '';
                 break;
         }
     });
@@ -60,15 +59,15 @@
             div.className = 'history-item' + (entry.active ? ' active' : '');
 
             const querySpan = document.createElement('span');
-            querySpan.className = 'query';
-            querySpan.textContent = '"' + entry.query + '"';
+            querySpan.className = 'history-query';
+            querySpan.textContent = entry.query;
 
             const countSpan = document.createElement('span');
-            countSpan.className = 'count';
-            countSpan.textContent = '(' + entry.count + ')';
+            countSpan.className = 'history-count';
+            countSpan.textContent = String(entry.count);
 
-            const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'delete-btn';
+            const deleteBtn = document.createElement('span');
+            deleteBtn.className = 'history-delete';
             deleteBtn.textContent = '\u00d7';
             deleteBtn.title = 'Delete';
             deleteBtn.addEventListener('click', (e) => {
@@ -85,33 +84,6 @@
             });
 
             historyList.appendChild(div);
-        }
-    }
-
-    function renderHighlights(highlights) {
-        highlightList.innerHTML = '';
-        if (!highlights || highlights.length === 0) {
-            var empty = document.createElement('div');
-            empty.className = 'highlight-empty';
-            empty.textContent = 'No highlights';
-            highlightList.appendChild(empty);
-            return;
-        }
-        for (const h of highlights) {
-            var div = document.createElement('div');
-            div.className = 'highlight-item';
-
-            var dot = document.createElement('span');
-            dot.className = 'highlight-color-dot';
-            dot.style.background = h.color;
-
-            var text = document.createElement('span');
-            text.className = 'highlight-text';
-            text.textContent = h.text;
-
-            div.appendChild(dot);
-            div.appendChild(text);
-            highlightList.appendChild(div);
         }
     }
 })();

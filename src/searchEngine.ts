@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import { SearchOptions, SearchResult } from './types';
 import { rgPath } from '@vscode/ripgrep';
+import { SymbolIndex } from './symbolIndex';
 
 export async function executeSearch(
     query: string,
@@ -103,4 +104,20 @@ function parseRgOutput(stdout: string, workspaceRoot: string): SearchResult[] {
     }
 
     return results;
+}
+
+export async function executeSearchWithIndex(
+    query: string,
+    workspaceRoot: string,
+    options: SearchOptions,
+    includeExtensions: string[],
+    excludePatterns: string[],
+    index: SymbolIndex | null,
+): Promise<SearchResult[]> {
+    if (index && (index.status === 'ready' || index.status === 'stale')) {
+        const results = index.searchSymbols(query, workspaceRoot, options);
+        if (results.length > 0) { return results; }
+    }
+    // Fallback to ripgrep
+    return executeSearch(query, workspaceRoot, options, includeExtensions, excludePatterns);
 }

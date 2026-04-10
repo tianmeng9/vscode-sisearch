@@ -13,36 +13,10 @@ body {
     color: var(--vscode-editor-selectionForeground, inherit);
 }
 
-#toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 4px 12px;
-    background: var(--vscode-editorGroupHeader-tabsBackground);
-    border-bottom: 1px solid var(--vscode-panel-border, transparent);
-    font-size: 12px;
-    position: sticky;
-    top: 0;
-    z-index: 10;
-}
-
-#toolbar button {
-    background: var(--vscode-button-secondaryBackground);
-    color: var(--vscode-button-secondaryForeground);
-    border: none;
-    padding: 2px 8px;
-    cursor: pointer;
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
-}
-
-#toolbar button:hover {
-    background: var(--vscode-button-secondaryHoverBackground);
-}
-
 .result-line {
     display: flex;
     align-items: flex-start;
+    flex-wrap: nowrap;
     padding: 2px 12px;
     cursor: default;
     line-height: 1.5;
@@ -61,14 +35,19 @@ body {
     flex-shrink: 0;
     width: 20px;
     height: 20px;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     color: var(--vscode-textLink-foreground);
     margin-right: 4px;
     border-radius: 3px;
-    font-size: 14px;
+    vertical-align: middle;
+}
+
+.jump-btn svg {
+    width: 16px;
+    height: 16px;
 }
 
 .jump-btn:hover {
@@ -78,11 +57,19 @@ body {
 .file-path {
     color: var(--vscode-textLink-foreground);
     margin-right: 4px;
+    font-family: var(--vscode-editor-font-family, 'Consolas, monospace');
+    font-size: var(--vscode-editor-font-size, 13px);
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .line-num {
     color: var(--vscode-editorLineNumber-foreground);
     margin-right: 8px;
+    font-family: var(--vscode-editor-font-family, 'Consolas, monospace');
+    font-size: var(--vscode-editor-font-size, 13px);
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .line-content {
@@ -125,17 +112,12 @@ body {
 .hover-preview .preview-line {
     white-space: pre;
     line-height: 1.5;
-    display: flex;
+    position: relative;
+    padding-left: 52px;
 }
 
 .hover-preview .preview-line-code {
-    flex: 1;
     white-space: pre;
-}
-
-.whitespace-char {
-    color: var(--vscode-editorWhitespace-foreground, rgba(255, 255, 255, 0.15));
-    font-size: 0.9em;
 }
 
 .hover-preview .preview-line.current {
@@ -143,10 +125,10 @@ body {
 }
 
 .hover-preview .preview-line-num {
-    display: inline-block;
+    position: absolute;
+    left: 0;
     width: 40px;
     text-align: right;
-    margin-right: 12px;
     color: var(--vscode-editorLineNumber-foreground);
     user-select: none;
 }

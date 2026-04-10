@@ -39,7 +39,8 @@ export interface SearchHistoryEntry {
 export type SidebarMessage =
     | { command: 'search'; query: string; options: SearchOptions; mode: SearchMode }
     | { command: 'selectHistory'; id: string }
-    | { command: 'deleteHistory'; id: string };
+    | { command: 'deleteHistory'; id: string }
+    | { command: 'clearAllHighlights' };
 
 /** Message types from extension to sidebar webview */
 export type SidebarUpdate =
@@ -81,4 +82,44 @@ export type PreviewResponse = {
     lineNumber: number;
     lines: { num: number; content: string; html?: string }[];
     bg?: string;
+    tabSize?: number;
 };
+
+// ── Symbol Index Types ──────────────────────────────────────────
+
+export type SymbolKind = 'function' | 'class' | 'struct' | 'enum' | 'typedef' | 'namespace' | 'macro' | 'variable' | 'union';
+
+export interface SymbolEntry {
+    name: string;
+    kind: SymbolKind;
+    filePath: string;
+    relativePath: string;
+    lineNumber: number;      // 1-based
+    endLineNumber: number;
+    column: number;           // 0-based
+    lineContent: string;
+}
+
+export interface IndexedFile {
+    relativePath: string;
+    mtime: number;
+    size: number;
+    symbolCount: number;
+}
+
+export interface SerializedIndex {
+    version: number;
+    createdAt: number;
+    workspaceRoot: string;
+    files: IndexedFile[];
+    symbols: SymbolEntry[];
+}
+
+export type IndexStatus = 'none' | 'building' | 'ready' | 'stale';
+
+export interface SyncProgress {
+    phase: 'scanning' | 'parsing' | 'saving';
+    current: number;
+    total: number;
+    currentFile?: string;
+}

@@ -9,7 +9,7 @@ suite('SearchEngine', () => {
     let tmpDir: string;
 
     setup(() => {
-        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-search-test-'));
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sisearch-test-'));
         fs.writeFileSync(path.join(tmpDir, 'test.c'), [
             '#include <stdio.h>',
             'int main() {',

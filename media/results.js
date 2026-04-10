@@ -1,8 +1,6 @@
 (function () {
     const vscode = acquireVsCodeApi();
     const resultsList = document.getElementById('resultsList');
-    const resultCount = document.getElementById('resultCount');
-    const btnClearHighlights = document.getElementById('btnClearHighlights');
     const hoverPreview = document.getElementById('hoverPreview');
 
     let allEntries = [];
@@ -13,12 +11,6 @@
     const HIGHLIGHT_COLORS = [];
     let highlightBoxMode = true;
     let contextMenu = null;
-
-    btnClearHighlights.addEventListener('click', () => {
-        manualHighlights = [];
-        rerenderContent();
-        vscode.postMessage({ command: 'clearAllHighlights' });
-    });
 
     window.addEventListener('message', (event) => {
         const msg = event.data;
@@ -57,6 +49,12 @@
                 if (msg.text) { toggleHighlight(msg.text); }
                 break;
             }
+            case 'clearHighlights': {
+                manualHighlights = [];
+                rerenderContent();
+                syncHighlightsToExtension();
+                break;
+            }
         }
     });
 
@@ -84,7 +82,6 @@
 
     function rerenderContent() {
         resultsList.innerHTML = '';
-        resultCount.textContent = allEntries.length + ' results';
 
         for (const entry of allEntries) {
             const row = document.createElement('div');
@@ -95,9 +92,12 @@
 
             const jumpBtn = document.createElement('span');
             jumpBtn.className = 'jump-btn';
-            jumpBtn.textContent = '\u2197';
+            jumpBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/><line x1="1" y1="8.5" x2="7" y2="8.5"/><polyline points="5 6.5 7 8.5 5 10.5"/></svg>';
             jumpBtn.title = 'Jump to source';
-            jumpBtn.addEventListener('click', () => {
+            jumpBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                clearTimeout(hoverTimer);
+                hoverPreview.style.display = 'none';
                 vscode.postMessage({
                     command: 'jumpToFile',
                     filePath: entry.filePath,
@@ -122,8 +122,9 @@
             row.appendChild(lineSpan);
             row.appendChild(contentSpan);
 
-            row.addEventListener('mouseenter', function (e) {
-                hoverRow = row;
+            // 只有悬停在代码部分才触发预览
+            contentSpan.addEventListener('mouseenter', function (e) {
+                hoverRow = contentSpan;
                 isMouseInPreview = false;
                 hoverTimer = setTimeout(() => {
                     vscode.postMessage({
@@ -133,7 +134,7 @@
                     });
                 }, 500);
             });
-            row.addEventListener('mouseleave', () => {
+            contentSpan.addEventListener('mouseleave', () => {
                 hoverRow = null;
                 clearTimeout(hoverTimer);
                 setTimeout(() => {
@@ -230,6 +231,9 @@
         } else {
             hoverPreview.style.background = '';
         }
+        var ts = data.tabSize || 8;
+        hoverPreview.style.tabSize = ts;
+        hoverPreview.style.MozTabSize = ts;
         let targetLineElement = null;
         for (var i = 0; i < data.lines.length; i++) {
             var line = data.lines[i];
@@ -256,8 +260,8 @@
             }
         }
 
-        // 定位在触发行附近（上方或下方），类似 VS Code 原生 hover
         hoverPreview.style.display = 'block';
+        hoverPreview.style.maxHeight = '300px';
         hoverPreview.style.top = '0px';
         hoverPreview.style.left = '0px';
 
@@ -268,12 +272,22 @@
 
         if (hoverRow) {
             var rowRect = hoverRow.getBoundingClientRect();
-            // 优先显示在行上方
-            if (rowRect.top > previewRect.height + 4) {
+            var spaceAbove = rowRect.top;
+            var spaceBelow = viewH - rowRect.bottom;
+
+            if (spaceAbove >= previewRect.height + 4) {
+                // 上方空间足够，紧贴悬停行上方
                 top = rowRect.top - previewRect.height - 4;
-            } else {
-                // 空间不够则显示在行下方
+            } else if (spaceBelow >= previewRect.height + 4) {
+                // 下方空间足够，紧贴悬停行下方
                 top = rowRect.bottom + 4;
+            } else if (spaceAbove > spaceBelow) {
+                // 都不够，选大的一边，限制预览高度
+                top = 4;
+                hoverPreview.style.maxHeight = (spaceAbove - 8) + 'px';
+            } else {
+                top = rowRect.bottom + 4;
+                hoverPreview.style.maxHeight = (spaceBelow - 8) + 'px';
             }
             left = rowRect.left;
         } else {
@@ -281,9 +295,7 @@
             left = viewW / 2 - previewRect.width / 2;
         }
 
-        // 边界约束
-        if (top + previewRect.height > viewH) { top = viewH - previewRect.height - 4; }
-        if (top < 0) { top = 4; }
+        // 水平边界约束
         if (left + previewRect.width > viewW) { left = viewW - previewRect.width - 4; }
         if (left < 0) { left = 4; }
 

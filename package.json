@@ -1,8 +1,10 @@
 {
-  "name": "si-search",
+  "name": "sisearch",
   "displayName": "SI Search",
   "description": "Source Insight style search for VS Code",
-  "version": "0.1.0",
+  "version": "1.0.0",
+  "publisher": "tianmeng9",
+  "icon": "media/marketplace-icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -10,25 +12,32 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:siSearch.searchPanel"
+    "onView:siSearch.searchPanel",
+    "onCommand:siSearch.syncIndex"
   ],
   "main": "./out/src/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "si-search",
+          "id": "sisearch",
           "title": "SI Search",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "si-search": [
+      "sisearch": [
         {
           "type": "webview",
           "id": "siSearch.searchPanel",
-          "name": "Search"
+          "name": "Search",
+          "visibility": "visible"
+        },
+        {
+          "id": "siSearch.highlightsView",
+          "name": "Highlights",
+          "visibility": "visible"
         }
       ]
     },
@@ -55,13 +64,59 @@
       },
       {
         "command": "siSearch.clearAllHighlights",
-        "title": "SI Search: Clear All Highlights"
+        "title": "SI Search: Clear All Highlights",
+        "icon": "$(clear-all)"
       },
       {
         "command": "siSearch.jumpToResult",
         "title": "SI Search: Jump to Result from Source"
+      },
+      {
+        "command": "siSearch.clearResults",
+        "title": "Clear Search Results",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "siSearch.removeHighlight",
+        "title": "Remove Highlight",
+        "icon": "$(close)"
+      },
+      {
+        "command": "siSearch.syncIndex",
+        "title": "SI Search: Synchronize Files",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "siSearch.clearIndex",
+        "title": "SI Search: Clear Symbol Index"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "siSearch.syncIndex",
+          "when": "view == siSearch.searchPanel",
+          "group": "navigation@1"
+        },
+        {
+          "command": "siSearch.clearResults",
+          "when": "view == siSearch.searchPanel",
+          "group": "navigation@2"
+        },
+        {
+          "command": "siSearch.clearAllHighlights",
+          "when": "view == siSearch.highlightsView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "siSearch.removeHighlight",
+          "when": "view == siSearch.highlightsView",
+          "group": "inline"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "siSearch.focusSearchPanel",
@@ -75,24 +130,28 @@
       },
       {
         "command": "siSearch.nextResult",
-        "key": "f3"
+        "key": "ctrl+shift+f4",
+        "mac": "cmd+shift+f4"
       },
       {
         "command": "siSearch.previousResult",
-        "key": "shift+f3"
+        "key": "ctrl+shift+f3",
+        "mac": "cmd+shift+f3"
       },
       {
         "command": "siSearch.highlightSelection",
-        "key": "f8"
-      },
-      {
-        "command": "siSearch.clearAllHighlights",
-        "key": "shift+f8"
+        "key": "ctrl+shift+f8",
+        "mac": "cmd+shift+f8"
       },
       {
         "command": "siSearch.jumpToResult",
         "key": "alt+j",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "siSearch.syncIndex",
+        "key": "ctrl+shift+s",
+        "mac": "cmd+shift+s"
       }
     ],
     "configuration": {
@@ -149,12 +208,18 @@
           "type": "boolean",
           "default": true,
           "description": "Wrap around when navigating past last/first result"
+        },
+        "siSearch.autoSyncOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically sync dirty files when saving"
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "copy-wasm": "node scripts/copy-wasm.js",
+    "vscode:prepublish": "npm run copy-wasm && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test": "node ./out/test/runTest.js"
@@ -168,7 +233,11 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
+    "@vscode/codicons": "^0.0.45",
     "@vscode/ripgrep": "^1.15.0",
-    "shiki": "^4.0.2"
+    "shiki": "^4.0.2",
+    "tree-sitter-c": "^0.24.1",
+    "tree-sitter-cpp": "^0.23.4",
+    "web-tree-sitter": "^0.26.8"
   }
 }

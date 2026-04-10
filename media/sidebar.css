@@ -1,89 +1,88 @@
 body {
-    padding: 8px;
+    padding: 4px 8px;
+    margin: 0;
     font-family: var(--vscode-font-family);
     font-size: var(--vscode-font-size);
     color: var(--vscode-foreground);
 }
 
-.search-input-row {
-    margin-bottom: 6px;
-}
-
-#searchInput {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 4px 8px;
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
+.search-row {
+    display: flex;
+    align-items: center;
     border: 1px solid var(--vscode-input-border, transparent);
-    outline: none;
+    border-radius: 2px;
+    background: var(--vscode-input-background);
+    overflow: hidden;
+    height: 26px;
 }
 
-#searchInput:focus {
+.search-row:focus-within {
     border-color: var(--vscode-focusBorder);
 }
 
-.search-options {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 6px;
+#searchInput {
+    flex: 1;
+    min-width: 0;
+    padding: 3px 6px;
     font-family: var(--vscode-font-family);
     font-size: var(--vscode-font-size);
+    background: transparent;
+    color: var(--vscode-input-foreground);
+    border: none;
+    outline: none;
 }
 
-.search-options label {
+.toggle-buttons {
+    display: flex;
+    flex-shrink: 0;
+    gap: 1px;
+    padding-right: 2px;
+    align-items: center;
+}
+
+.toggle-btn {
+    width: 22px;
+    height: 20px;
     display: flex;
     align-items: center;
-    gap: 3px;
-    cursor: pointer;
-}
-
-.search-actions {
-    display: flex;
-    gap: 4px;
-    margin-bottom: 12px;
-}
-
-.search-actions button {
-    flex: 1;
-    padding: 4px 8px;
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border: none;
+    justify-content: center;
+    background: transparent;
+    color: var(--vscode-input-foreground);
+    border: 1px solid transparent;
+    border-radius: 3px;
     cursor: pointer;
     font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
+    font-size: 12px;
+    font-weight: 600;
+    opacity: 0.5;
+    padding: 0;
+    line-height: 1;
 }
 
-.search-actions button:hover {
-    background: var(--vscode-button-hoverBackground);
+.toggle-btn:hover {
+    background: var(--vscode-toolbar-hoverBackground);
+    opacity: 0.85;
 }
 
-.section-container {
-    margin-bottom: 12px;
+.toggle-btn.active {
+    background: var(--vscode-inputOption-activeBackground, rgba(0, 100, 200, 0.4));
+    color: var(--vscode-inputOption-activeForeground, var(--vscode-input-foreground));
+    border-color: var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder));
+    opacity: 1;
 }
 
-.section-header {
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
-    text-transform: uppercase;
-    color: var(--vscode-descriptionForeground);
-    margin-bottom: 4px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+/* History */
+#historyList {
+    margin-top: 6px;
 }
 
 .history-item {
-    padding: 4px 8px;
-    cursor: pointer;
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    padding: 2px 6px;
+    cursor: pointer;
     border-radius: 3px;
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
+    line-height: 22px;
 }
 
 .history-item:hover {
@@ -95,61 +94,38 @@ body {
     color: var(--vscode-list-activeSelectionForeground);
 }
 
-.history-item .query {
+.history-query {
+    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    flex: 1;
 }
 
-.history-item .count {
-    font-size: var(--vscode-font-size);
-    color: var(--vscode-descriptionForeground);
-    margin-left: 8px;
-}
-
-.history-item .delete-btn {
-    display: none;
-    background: none;
-    border: none;
-    color: var(--vscode-descriptionForeground);
-    cursor: pointer;
-    padding: 0 2px;
-    font-size: 14px;
-}
-
-.history-item:hover .delete-btn {
-    display: inline;
-}
-
-.highlight-item {
-    padding: 3px 8px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    border-radius: 3px;
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
-}
-
-.highlight-item .highlight-color-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+.history-count {
     flex-shrink: 0;
-}
-
-.highlight-item .highlight-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-}
-
-.highlight-empty {
-    padding: 3px 8px;
+    margin-left: 6px;
     color: var(--vscode-descriptionForeground);
-    font-style: italic;
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
+    font-size: 0.9em;
+}
+
+.history-delete {
+    display: none;
+    flex-shrink: 0;
+    margin-left: 4px;
+    cursor: pointer;
+    color: var(--vscode-descriptionForeground);
+    font-size: 14px;
+    width: 16px;
+    text-align: center;
+    line-height: 16px;
+    border-radius: 3px;
+}
+
+.history-item:hover .history-delete {
+    display: block;
+}
+
+.history-delete:hover {
+    background: var(--vscode-toolbar-hoverBackground);
+    color: var(--vscode-foreground);
 }

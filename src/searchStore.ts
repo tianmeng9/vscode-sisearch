@@ -63,6 +63,21 @@ export class SearchStore {
         this.emit();
     }
 
+    clearActiveResults(): void {
+        this.activeResults = [];
+        this.activeHistoryId = null;
+        this.navigationIndex = -1;
+        this.emit();
+    }
+
+    clearAll(): void {
+        this.history = [];
+        this.activeResults = [];
+        this.activeHistoryId = null;
+        this.navigationIndex = -1;
+        this.emit();
+    }
+
     deleteHistory(id: string): void {
         this.history = this.history.filter(e => e.id !== id);
         if (this.activeHistoryId === id) {

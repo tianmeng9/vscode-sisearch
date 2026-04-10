@@ -182,10 +182,6 @@ export async function tokenizeFile(
 
         const { tokens: tokenLines, bg } = hl.codeToTokens(fileContent, { lang, theme });
 
-        // 读取空白字符显示配置
-        const renderWhitespace = vscode.workspace.getConfiguration('editor').get<string>('renderWhitespace', 'selection');
-        const showWhitespace = renderWhitespace === 'all' || renderWhitespace === 'boundary';
-
         const result: TokenizedLine[] = [];
         for (let i = 0; i < rawLines.length; i++) {
             const lineTokens = tokenLines[i];
@@ -197,9 +193,6 @@ export async function tokenizeFile(
             let html = '';
             for (const token of lineTokens) {
                 let escaped = escapeHtml(token.content);
-                if (showWhitespace) {
-                    escaped = renderWhitespaceChars(escaped);
-                }
                 if (token.color) {
                     html += `<span style="color:${token.color}">${escaped}</span>`;
                 } else {
@@ -213,12 +206,6 @@ export async function tokenizeFile(
         console.error('[SI Search] tokenize error:', e);
         return { lines: rawLines.map((content, i) => ({ num: i + 1, content })) };
     }
-}
-
-function renderWhitespaceChars(html: string): string {
-    html = html.replace(/\t/g, '<span class="whitespace-char">→\t</span>');
-    html = html.replace(/ /g, '<span class="whitespace-char">·</span>');
-    return html;
 }
 
 function escapeHtml(text: string): string {
