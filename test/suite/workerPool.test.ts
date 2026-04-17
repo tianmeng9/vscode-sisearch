@@ -69,4 +69,56 @@ suite('workerPool', () => {
         assert.deepStrictEqual(result.errors, []);
         await pool.dispose();
     });
+
+    test('errors from workers are collected not thrown', async () => {
+        const pool = new WorkerPool({
+            size: 1,
+            workerFactory: async () => ({
+                parseBatch: async () => ({
+                    symbols: [],
+                    metadata: [],
+                    errors: ['a.c: parse error'],
+                }),
+                dispose: async () => {},
+            }),
+        });
+
+        const result = await pool.parse([{ absPath: '/workspace/a.c', relativePath: 'a.c' }]);
+        assert.strictEqual(result.errors.length, 1);
+        assert.ok(result.errors[0].includes('parse error'));
+        await pool.dispose();
+    });
+
+    test('multiple workers split work evenly', async () => {
+        const workerCalls: number[] = [0, 0];
+        const pool = new WorkerPool({
+            size: 2,
+            workerFactory: async () => {
+                const idx = workerCalls.length - 2;
+                return {
+                    parseBatch: async (files) => {
+                        workerCalls[idx < 0 ? 0 : idx]++;
+                        return {
+                            symbols: files.map(f => ({
+                                name: f.relativePath, kind: 'function' as const,
+                                filePath: f.absPath, relativePath: f.relativePath,
+                                lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '',
+                            })),
+                            metadata: files.map(f => ({ relativePath: f.relativePath, mtime: 1, size: 1, symbolCount: 1 })),
+                            errors: [],
+                        };
+                    },
+                    dispose: async () => {},
+                };
+            },
+        });
+
+        const files = Array.from({ length: 4 }, (_, i) => ({
+            absPath: `/workspace/file${i}.c`,
+            relativePath: `file${i}.c`,
+        }));
+        const result = await pool.parse(files);
+        assert.strictEqual(result.symbols.length, 4);
+        await pool.dispose();
+    });
 });

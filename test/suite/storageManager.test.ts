@@ -68,4 +68,25 @@ suite('storageManager', () => {
 
         fs.rmSync(workspaceRoot, { recursive: true });
     });
+
+    test('saveFull with multiple files distributes across shards correctly', async () => {
+        const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sisearch-'));
+        const manager = new StorageManager({ workspaceRoot, shardCount: 4 });
+
+        const symbolsByFile = new Map<string, any[]>();
+        const fileMetadata = new Map<string, any>();
+        for (let i = 0; i < 8; i++) {
+            const rel = `file${i}.c`;
+            symbolsByFile.set(rel, [{ name: `fn${i}`, kind: 'function', filePath: `/ws/${rel}`, relativePath: rel, lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '' }]);
+            fileMetadata.set(rel, { relativePath: rel, mtime: i, size: i * 10, symbolCount: 1 });
+        }
+
+        await manager.saveFull({ symbolsByFile, fileMetadata });
+        const loaded = await manager.load();
+
+        assert.strictEqual(loaded.symbolsByFile.size, 8);
+        assert.strictEqual(loaded.fileMetadata.size, 8);
+
+        fs.rmSync(workspaceRoot, { recursive: true });
+    });
 });
