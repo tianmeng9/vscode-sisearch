@@ -137,6 +137,29 @@ export function parseSymbols(filePath: string, relativePath: string, content: st
     return symbols;
 }
 
+// ── Reusable parser API (for Worker thread reuse) ─────────────────────────────
+
+export interface ReusableParser {
+    parse(filePath: string, relativePath: string, content: string): SymbolEntry[];
+    dispose(): void;
+}
+
+export async function createReusableParser(extensionPath: string): Promise<ReusableParser> {
+    await initParser(extensionPath);
+    return {
+        parse(filePath: string, relativePath: string, content: string): SymbolEntry[] {
+            return parseSymbols(filePath, relativePath, content);
+        },
+        dispose(): void {
+            // Lifecycle is managed by the process; call disposeParser() when truly done.
+        },
+    };
+}
+
+export function parseSymbolsWithParser(parser: ReusableParser, filePath: string, relativePath: string, content: string): SymbolEntry[] {
+    return parser.parse(filePath, relativePath, content);
+}
+
 export function disposeParser(): void {
     queryC?.delete();
     queryCpp?.delete();
