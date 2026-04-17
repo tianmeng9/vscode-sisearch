@@ -1,0 +1,1 @@
+export { EditorDecorations } from '../editorDecorations';

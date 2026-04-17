@@ -1,14 +1,14 @@
 // src/extension.ts
 import * as vscode from 'vscode';
-import { SearchStore } from './searchStore';
-import { SidebarProvider } from './sidebarProvider';
-import { ResultsPanel } from './resultsPanel';
-import { EditorDecorations } from './editorDecorations';
-import { SearchResultCodeLensProvider } from './codeLensProvider';
-import { executeSearchWithIndex } from './searchEngine';
-import { navigateNext, navigatePrevious, openResultInEditor } from './navigation';
+import { SearchStore } from './search/searchStore';
+import { SidebarProvider } from './ui/sidebarProvider';
+import { ResultsPanel } from './ui/resultsPanel';
+import { EditorDecorations } from './ui/editorDecorations';
+import { SearchResultCodeLensProvider } from './ui/codeLensProvider';
+import { executeSearchWithIndex } from './search/searchEngine';
+import { navigateNext, navigatePrevious, openResultInEditor } from './search/navigation';
 import { tokenizeFile } from './syntaxHighlight';
-import { HighlightsTreeProvider } from './highlightsTreeProvider';
+import { HighlightsTreeProvider } from './ui/highlightsTree';
 import { SymbolIndex } from './symbolIndex';
 import { FileWatcher } from './fileWatcher';
 import { initParser, disposeParser } from './symbolParser';

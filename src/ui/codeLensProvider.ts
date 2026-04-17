@@ -1,0 +1,1 @@
+export { SearchResultCodeLensProvider } from '../codeLensProvider';
