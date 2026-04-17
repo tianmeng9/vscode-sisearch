@@ -218,6 +218,16 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically sync dirty files when saving"
+        },
+        "siSearch.autoSync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic sync after file changes"
+        },
+        "siSearch.autoSyncDelay": {
+          "type": "number",
+          "default": 5000,
+          "description": "Debounce delay in milliseconds before auto sync triggers"
         }
       }
     }
