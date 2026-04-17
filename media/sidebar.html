@@ -13,6 +13,15 @@
             <button id="optCase" class="toggle-btn" title="Match Case">Aa</button>
             <button id="optWord" class="toggle-btn" title="Match Whole Word">Ab</button>
             <button id="optRegex" class="toggle-btn" title="Use Regular Expression">.*</button>
+            <button id="toggleFilters" class="toggle-btn" title="Toggle Search Filters">⋯</button>
+        </div>
+    </div>
+    <div id="filterSection" class="filter-section hidden">
+        <div class="filter-row">
+            <input type="text" id="filesToInclude" placeholder="files to include (e.g. *.c, src/**)" />
+        </div>
+        <div class="filter-row">
+            <input type="text" id="filesToExclude" placeholder="files to exclude (e.g. **/build/**)" />
         </div>
     </div>
     <div id="historyList"></div>

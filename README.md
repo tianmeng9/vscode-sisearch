@@ -38,6 +38,14 @@ This hybrid approach gives you the speed of pre-built indexes with the coverage 
 - **Gutter indicators** &mdash; Source files that contain search results show blue triangle markers in the editor gutter.
 - **CodeLens links** &mdash; "Jump to Search Result" CodeLens appears on matched lines, allowing quick navigation back to the results panel.
 
+### Search Filters (Include / Exclude)
+
+Click the `⋯` button next to the regex toggle to reveal **files to include** and **files to exclude** input fields — just like VS Code's native search.
+
+- **Files to include** &mdash; Comma-separated glob patterns (e.g. `*.c, src/**`). When specified, these **replace** the `includeFileExtensions` setting for that search.
+- **Files to exclude** &mdash; Comma-separated glob patterns (e.g. `**/test/**, **/build/**`). These are **merged with** the `excludePatterns` setting.
+- Press `Enter` in any of the three inputs (search, include, exclude) to trigger the search.
+
 ### Manual Highlights
 
 - Press `Ctrl+Shift+F8` to highlight the selected text (or trigger a selection prompt in the results panel).
@@ -98,12 +106,28 @@ All settings are under the `siSearch.*` namespace in VS Code settings.
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `siSearch.includeFileExtensions` | `string[]` | `[".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".inl"]` | File extensions to include in search and symbol indexing. |
+| `siSearch.includePaths` | `string[]` | `[]` | Subdirectories to include in symbol indexing (e.g. `["src/wifi", "src/drivers"]`). Empty means entire workspace. |
 | `siSearch.excludePatterns` | `string[]` | `["**/build/**", "**/.git/**", "**/node_modules/**"]` | Glob patterns to exclude from search. |
 | `siSearch.previewContextLines` | `number` | `5` | Number of context lines shown above and below the matched line in hover preview. |
 | `siSearch.highlightColors` | `string[]` | `["cyan", "pink", "lightgreen", "magenta", "cornflowerblue", "orange", "green", "red"]` | Color palette for manual highlight marking. Colors cycle in order. |
 | `siSearch.highlightBox` | `boolean` | `true` | When `true`, highlights use a border-only box style; when `false`, highlights use solid background fill. |
 | `siSearch.navigationWrap` | `boolean` | `true` | Wrap around to the first/last result when navigating past the end/beginning. |
 | `siSearch.autoSyncOnSave` | `boolean` | `false` | Automatically re-sync dirty files when saving. |
+
+### Example `.vscode/settings.json`
+
+```jsonc
+{
+    // Only index files under these subdirectories (empty = entire workspace)
+    "siSearch.includePaths": ["src/wifi", "src/drivers"],
+
+    // File extensions for search and indexing
+    "siSearch.includeFileExtensions": [".c", ".h", ".cpp", ".hpp"],
+
+    // Glob patterns excluded from all searches
+    "siSearch.excludePatterns": ["**/build/**", "**/.git/**", "**/node_modules/**"]
+}
+```
 
 ## Search Options
 

@@ -171,6 +171,11 @@
           ],
           "description": "File extensions to include in search"
         },
+        "siSearch.includePaths": {
+          "type": "array",
+          "default": [],
+          "description": "Subdirectories to include in symbol indexing (e.g. [\"src/wifi\", \"src/drivers\"]). Empty means entire workspace."
+        },
         "siSearch.excludePatterns": {
           "type": "array",
           "default": [

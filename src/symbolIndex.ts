@@ -44,18 +44,28 @@ export class SymbolIndex {
         excludePatterns: string[],
         token: vscode.CancellationToken,
         onProgress?: (p: SyncProgress) => void,
+        includePaths?: string[],
     ): Promise<void> {
         this._status = 'building';
 
         // Phase 1: Scan files
         onProgress?.({ phase: 'scanning', current: 0, total: 0 });
 
-        const includeGlob = `**/*{${extensions.join(',')}}`;
+        const extGlob = `*{${extensions.join(',')}}`;
         const excludeGlob = excludePatterns.length
             ? `{${excludePatterns.join(',')}}`
             : undefined;
 
-        const uris = await vscode.workspace.findFiles(includeGlob, excludeGlob);
+        // If includePaths specified, scan each path separately; otherwise scan entire workspace
+        const prefixes = includePaths && includePaths.length > 0 ? includePaths : ['**'];
+        const allUris: vscode.Uri[] = [];
+        for (const prefix of prefixes) {
+            if (token.isCancellationRequested) { break; }
+            const pattern = prefix === '**' ? `**/${extGlob}` : `${prefix}/**/${extGlob}`;
+            const uris = await vscode.workspace.findFiles(pattern, excludeGlob);
+            allUris.push(...uris);
+        }
+        const uris = allUris;
         if (token.isCancellationRequested) { this._status = this.symbolsByFile.size > 0 ? 'stale' : 'none'; return; }
 
         // Phase 2: Classify files as added/changed/unchanged/deleted

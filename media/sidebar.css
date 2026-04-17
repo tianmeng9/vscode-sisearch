@@ -71,6 +71,40 @@ body {
     opacity: 1;
 }
 
+/* Filter section */
+.filter-section {
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.filter-section.hidden {
+    display: none;
+}
+
+.filter-row input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 3px 6px;
+    height: 24px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 2px;
+    outline: none;
+}
+
+.filter-row input:focus {
+    border-color: var(--vscode-focusBorder);
+}
+
+.filter-row input::placeholder {
+    color: var(--vscode-input-placeholderForeground);
+}
+
 /* History */
 #historyList {
     margin-top: 6px;

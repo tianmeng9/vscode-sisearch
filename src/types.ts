@@ -37,7 +37,7 @@ export interface SearchHistoryEntry {
 
 /** Message types from sidebar webview to extension */
 export type SidebarMessage =
-    | { command: 'search'; query: string; options: SearchOptions; mode: SearchMode }
+    | { command: 'search'; query: string; options: SearchOptions; mode: SearchMode; filesToInclude?: string[]; filesToExclude?: string[] }
     | { command: 'selectHistory'; id: string }
     | { command: 'deleteHistory'; id: string }
     | { command: 'clearAllHighlights' };

@@ -66,7 +66,13 @@ function buildRgArgs(
     }
 
     for (const ext of includeExtensions) {
-        args.push('--glob', `*${ext}`);
+        // If it looks like a raw extension (e.g. ".c"), wrap as "*{ext}";
+        // otherwise treat as a user-supplied glob pattern (e.g. "*.c", "src/**")
+        if (ext.startsWith('.') && !ext.includes('*') && !ext.includes('/')) {
+            args.push('--glob', `*${ext}`);
+        } else {
+            args.push('--glob', ext);
+        }
     }
 
     for (const pattern of excludePatterns) {

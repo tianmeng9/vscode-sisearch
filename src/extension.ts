@@ -84,8 +84,14 @@ export function activate(context: vscode.ExtensionContext) {
                 }
 
                 const config = vscode.workspace.getConfiguration('siSearch');
-                const extensions = config.get<string[]>('includeFileExtensions', ['.c', '.h', '.cpp', '.hpp']);
-                const excludes = config.get<string[]>('excludePatterns', ['**/build/**', '**/.git/**']);
+                // If user specified include patterns in UI, use those; otherwise fall back to settings
+                const extensions = (msg.filesToInclude && msg.filesToInclude.length > 0)
+                    ? msg.filesToInclude
+                    : config.get<string[]>('includeFileExtensions', ['.c', '.h', '.cpp', '.hpp']);
+                // Merge UI excludes with settings excludes
+                const settingExcludes = config.get<string[]>('excludePatterns', ['**/build/**', '**/.git/**']);
+                const uiExcludes = msg.filesToExclude || [];
+                const excludes = [...settingExcludes, ...uiExcludes];
 
                 sidebarProvider.postMessage({ command: 'searchStarted' });
 
@@ -283,6 +289,7 @@ export function activate(context: vscode.ExtensionContext) {
                 const cfg = vscode.workspace.getConfiguration('siSearch');
                 const exts = cfg.get<string[]>('includeFileExtensions', ['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl']);
                 const excl = cfg.get<string[]>('excludePatterns', ['**/build/**', '**/.git/**', '**/node_modules/**']);
+                const incPaths = cfg.get<string[]>('includePaths', []);
 
                 updateStatusBar(statusBarItem, symbolIndex);
 
@@ -294,7 +301,7 @@ export function activate(context: vscode.ExtensionContext) {
                     } else {
                         progress.report({ message: 'Saving index...' });
                     }
-                });
+                }, incPaths);
 
                 updateStatusBar(statusBarItem, symbolIndex);
                 const stats = symbolIndex.getStats();

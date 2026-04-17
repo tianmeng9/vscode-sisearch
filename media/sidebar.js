@@ -5,6 +5,10 @@
     const optCase = document.getElementById('optCase');
     const optWord = document.getElementById('optWord');
     const optRegex = document.getElementById('optRegex');
+    const toggleFilters = document.getElementById('toggleFilters');
+    const filterSection = document.getElementById('filterSection');
+    const filesToInclude = document.getElementById('filesToInclude');
+    const filesToExclude = document.getElementById('filesToExclude');
     const historyList = document.getElementById('historyList');
 
     function setupToggle(btn) {
@@ -16,6 +20,12 @@
     setupToggle(optWord);
     setupToggle(optRegex);
 
+    // Toggle filter section visibility
+    toggleFilters.addEventListener('click', () => {
+        toggleFilters.classList.toggle('active');
+        filterSection.classList.toggle('hidden');
+    });
+
     function getOptions() {
         return {
             caseSensitive: optCase.classList.contains('active'),
@@ -24,14 +34,28 @@
         };
     }
 
-    searchInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            const query = searchInput.value.trim();
-            if (!query) { return; }
-            const mode = e.shiftKey ? 'append' : 'replace';
-            vscode.postMessage({ command: 'search', query, options: getOptions(), mode });
-        }
-    });
+    function getFilterPatterns(input) {
+        const val = input.value.trim();
+        if (!val) { return []; }
+        return val.split(',').map(s => s.trim()).filter(Boolean);
+    }
+
+    function doSearch(e) {
+        if (e.key !== 'Enter') { return; }
+        const query = searchInput.value.trim();
+        if (!query) { return; }
+        const mode = e.shiftKey ? 'append' : 'replace';
+        const msg = { command: 'search', query, options: getOptions(), mode };
+        const inc = getFilterPatterns(filesToInclude);
+        const exc = getFilterPatterns(filesToExclude);
+        if (inc.length) { msg.filesToInclude = inc; }
+        if (exc.length) { msg.filesToExclude = exc; }
+        vscode.postMessage(msg);
+    }
+
+    searchInput.addEventListener('keydown', doSearch);
+    filesToInclude.addEventListener('keydown', doSearch);
+    filesToExclude.addEventListener('keydown', doSearch);
 
     window.addEventListener('message', (event) => {
         const msg = event.data;
