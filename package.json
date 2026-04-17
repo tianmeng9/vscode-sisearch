@@ -237,7 +237,10 @@
     "vscode:prepublish": "npm run copy-wasm && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "bench:sync": "node ./out/test/benchmark/syncBench.js",
+    "bench:search": "node ./out/test/benchmark/searchBench.js",
+    "bench:storage": "node ./out/test/benchmark/storageBench.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.0",
