@@ -1,11 +1,11 @@
 // src/messageRouter.ts
 // 集中处理 SidebarProvider 与 ResultsPanel 的双向消息路由
 
-import type { SearchStore } from './searchStore';
-import type { SidebarProvider } from './sidebarProvider';
-import type { ResultsPanel } from './resultsPanel';
-import type { EditorDecorations } from './editorDecorations';
-import type { HighlightsTreeProvider } from './highlightsTreeProvider';
+import type { SearchStore } from './search/searchStore';
+import type { SidebarProvider } from './ui/sidebarProvider';
+import type { ResultsPanel } from './ui/resultsPanel';
+import type { EditorDecorations } from './ui/editorDecorations';
+import type { HighlightsTreeProvider } from './ui/highlightsTree';
 import type { SymbolIndex } from './symbolIndex';
 import type { SidebarMessage, SearchResult, SearchOptions, PreviewResponse, ResultsPanelMessage } from './types';
 import type { TokenizedLine } from './syntaxHighlight';

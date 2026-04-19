@@ -2,11 +2,11 @@
 // 集中注册所有 VS Code 命令，通过依赖注入支持测试
 
 import type * as vscode from 'vscode';
-import type { SearchStore } from './searchStore';
-import type { ResultsPanel } from './resultsPanel';
-import type { SidebarProvider } from './sidebarProvider';
-import type { EditorDecorations } from './editorDecorations';
-import type { HighlightsTreeProvider } from './highlightsTreeProvider';
+import type { SearchStore } from './search/searchStore';
+import type { ResultsPanel } from './ui/resultsPanel';
+import type { SidebarProvider } from './ui/sidebarProvider';
+import type { EditorDecorations } from './ui/editorDecorations';
+import type { HighlightsTreeProvider } from './ui/highlightsTree';
 import type { SymbolIndex } from './symbolIndex';
 import type { SearchResult, SyncProgress } from './types';
 
