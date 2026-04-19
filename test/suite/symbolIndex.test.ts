@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { SymbolIndex } from '../../src/index/symbolIndex';
+import { InMemorySymbolIndex } from '../../src/index/symbolIndex';
 import type { SymbolEntry } from '../../src/index/indexTypes';
 
 function makeSymbol(name: string, relativePath: string, lineNumber: number): SymbolEntry {
@@ -19,7 +19,7 @@ const opts = { caseSensitive: false, wholeWord: false, regex: false };
 
 suite('SymbolIndex', () => {
     test('update replaces previous symbols for same file', () => {
-        const index = new SymbolIndex();
+        const index = new InMemorySymbolIndex();
         index.update('a.c', [makeSymbol('foo', 'a.c', 1)]);
         index.update('a.c', [makeSymbol('bar', 'a.c', 2)]);
 
@@ -33,7 +33,7 @@ suite('SymbolIndex', () => {
     });
 
     test('remove deletes file and name index entries', () => {
-        const index = new SymbolIndex();
+        const index = new InMemorySymbolIndex();
         index.update('a.c', [makeSymbol('foo', 'a.c', 1)]);
         index.remove('a.c');
 
@@ -42,7 +42,7 @@ suite('SymbolIndex', () => {
     });
 
     test('search supports exact and substring matching', () => {
-        const index = new SymbolIndex();
+        const index = new InMemorySymbolIndex();
         index.update('a.c', [makeSymbol('AlphaHandler', 'a.c', 1)]);
         index.update('b.c', [makeSymbol('BetaHandler', 'b.c', 2)]);
 
@@ -54,7 +54,7 @@ suite('SymbolIndex', () => {
     });
 
     test('replaceAll atomically swaps entire index', () => {
-        const index = new SymbolIndex();
+        const index = new InMemorySymbolIndex();
         index.update('a.c', [makeSymbol('old', 'a.c', 1)]);
 
         const next = new Map<string, SymbolEntry[]>();
@@ -67,7 +67,7 @@ suite('SymbolIndex', () => {
     });
 
     test('snapshot returns copy of current index data', () => {
-        const index = new SymbolIndex();
+        const index = new InMemorySymbolIndex();
         index.update('a.c', [makeSymbol('snap', 'a.c', 1)]);
         const snap = index.snapshot();
         index.remove('a.c');

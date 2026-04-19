@@ -2,13 +2,13 @@
 // 搜索性能基准 — 测量 50k symbol 索引下的搜索耗时
 
 import { performance } from 'perf_hooks';
-import { SymbolIndex } from '../../src/index/symbolIndex';
+import { InMemorySymbolIndex } from '../../src/index/symbolIndex';
 
 const BASELINE_MS = 50;
 const SYMBOL_COUNT = 50000;
 
 async function main(): Promise<void> {
-    const index = new SymbolIndex();
+    const index = new InMemorySymbolIndex();
 
     // 预填 50k symbols
     const filesPerBatch = 500;

@@ -37,7 +37,34 @@ export class StorageManager {
 
     async saveFull(snapshot: IndexSnapshot): Promise<void> {
         fs.mkdirSync(this.shardsDir, { recursive: true });
+        const shardBuckets = this.bucketizeShards(snapshot);
+        for (let i = 0; i < this.options.shardCount; i++) {
+            this.writeShard(i, shardBuckets.get(i) ?? []);
+        }
+    }
 
+    /**
+     * 只重写受 dirtyPaths 影响的 shard。调用方负责确保 snapshot 反映的是
+     * 最新全量状态（dirtyPaths 中的删除项应已从 snapshot 里移除，新增/修改
+     * 项应已写入 snapshot）。
+     */
+    async saveDirty(snapshot: IndexSnapshot, dirtyPaths: Set<string>): Promise<void> {
+        if (dirtyPaths.size === 0) { return; }
+        fs.mkdirSync(this.shardsDir, { recursive: true });
+
+        const dirtyShards = new Set<number>();
+        for (const p of dirtyPaths) {
+            dirtyShards.add(shardForPath(p, this.options.shardCount));
+        }
+
+        // 重新分桶整个 snapshot,但只写 dirtyShards
+        const shardBuckets = this.bucketizeShards(snapshot);
+        for (const shard of dirtyShards) {
+            this.writeShard(shard, shardBuckets.get(shard) ?? []);
+        }
+    }
+
+    private bucketizeShards(snapshot: IndexSnapshot): Map<number, ShardEntry[]> {
         const shardBuckets = new Map<number, ShardEntry[]>();
         for (const [relativePath, symbols] of snapshot.symbolsByFile) {
             const shard = shardForPath(relativePath, this.options.shardCount);
@@ -46,12 +73,12 @@ export class StorageManager {
             bucket.push({ relativePath, symbols, metadata: meta });
             shardBuckets.set(shard, bucket);
         }
+        return shardBuckets;
+    }
 
-        for (let i = 0; i < this.options.shardCount; i++) {
-            const filePath = path.join(this.shardsDir, shardFileName(i));
-            const bucket = shardBuckets.get(i) ?? [];
-            fs.writeFileSync(filePath, Buffer.from(encodeMessagePack(bucket)));
-        }
+    private writeShard(index: number, bucket: ShardEntry[]): void {
+        const filePath = path.join(this.shardsDir, shardFileName(index));
+        fs.writeFileSync(filePath, Buffer.from(encodeMessagePack(bucket)));
     }
 
     async load(): Promise<IndexSnapshot> {

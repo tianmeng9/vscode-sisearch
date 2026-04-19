@@ -4,7 +4,7 @@
 import type { SearchOptions, SearchResult } from '../types';
 import type { SymbolEntry } from './indexTypes';
 
-export class SymbolIndex {
+export class InMemorySymbolIndex {
     private symbolsByFile = new Map<string, SymbolEntry[]>();
     private nameIndex = new Map<string, SymbolEntry[]>();
 
