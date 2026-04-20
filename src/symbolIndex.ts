@@ -116,7 +116,7 @@ export class SymbolIndex {
         const orchestrator = new SyncOrchestrator({
             scanFiles: async (root) => this.scanWorkspace(root, extensions, excludePatterns, includePaths, token),
             classify: async (input) => classifyBatches(input),
-            workerPool: { parse: (files) => this.runParse(files, workspaceRoot) },
+            workerPool: { parse: (files, onBatchComplete) => this.runParse(files, workspaceRoot, onBatchComplete) },
             index: {
                 update: (file, symbols) => this.inner.update(file, symbols),
                 remove: file => {
@@ -268,15 +268,18 @@ export class SymbolIndex {
         return storage;
     }
 
-    /** 统一 parse 入口:有 WorkerPool 走它,否则主线程回退。 */
+    /** 统一 parse 入口:有 WorkerPool 走它,否则主线程回退。
+     *  onBatchComplete(done,total,lastFile) 会在每小批(默认 128 files)完成后触发,
+     *  给 sync 驱动的 UI 提供逐批进度。主线程 fallback 下按单文件粒度发信号。 */
     private async runParse(
         files: Array<{ absPath: string; relativePath: string }>,
         workspaceRoot: string,
+        onBatchComplete?: (done: number, total: number, lastFile?: string) => void,
     ): Promise<ParseBatchResult> {
         if (this.workerPool) {
-            return this.workerPool.parse(files);
+            return this.workerPool.parse(files, onBatchComplete);
         }
-        return this.parseInProcess(files, workspaceRoot);
+        return this.parseInProcess(files, workspaceRoot, onBatchComplete);
     }
 
     /** syncDirty 路径:把 parse 结果回灌 inner + fileMetadata。
@@ -335,13 +338,18 @@ export class SymbolIndex {
     private async parseInProcess(
         files: Array<{ absPath: string; relativePath: string }>,
         workspaceRoot: string,
+        onBatchComplete?: (done: number, total: number, lastFile?: string) => void,
     ): Promise<ParseBatchResult> {
         const { parseSymbols } = await import('./symbolParser');
         const symbols: SymbolEntry[] = [];
         const metadata: IndexedFile[] = [];
         const errors: string[] = [];
 
-        for (const f of files) {
+        const total = files.length;
+        // 主线程 fallback:无 WorkerPool 场景,按 32 文件小批发进度,避免 per-file 抖动。
+        const BATCH = 32;
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
             try {
                 const uri = vscode.Uri.file(f.absPath);
                 const contentBytes = await vscode.workspace.fs.readFile(uri);
@@ -352,6 +360,9 @@ export class SymbolIndex {
                 metadata.push({ relativePath: f.relativePath, mtime: stat.mtime, size: stat.size, symbolCount: parsed.length });
             } catch (e) {
                 errors.push(`${f.relativePath}: ${(e as Error).message}`);
+            }
+            if ((i + 1) % BATCH === 0 || i === files.length - 1) {
+                onBatchComplete?.(i + 1, total, f.relativePath);
             }
         }
         void workspaceRoot;
