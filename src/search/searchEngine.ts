@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
+import * as readline from 'readline';
 import { SearchOptions, SearchResult } from '../types';
 import { rgPath } from '@vscode/ripgrep';
 import { SymbolIndex } from '../symbolIndex';
@@ -15,10 +16,16 @@ export async function executeSearch(
         const args = buildRgArgs(query, options, includeExtensions, excludePatterns);
         const proc = spawn(rgPath, args, { cwd: workspaceRoot });
 
-        let stdout = '';
+        const results: SearchResult[] = [];
         let stderr = '';
 
-        proc.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+        // P7.4: readline 逐行消费 stdout,避免将全量输出累积到字符串后再 split
+        const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
+        rl.on('line', line => {
+            const parsed = parseRgLine(line, workspaceRoot);
+            if (parsed) { results.push(parsed); }
+        });
+
         proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
         proc.on('close', (code) => {
@@ -27,8 +34,9 @@ export async function executeSearch(
                 reject(new Error(`ripgrep failed (code ${code}): ${stderr}`));
                 return;
             }
-            const results = parseRgOutput(stdout, workspaceRoot);
-            resolve(results);
+            // 等待 readline 把 buffer 里最后一行也 emit 完,再 resolve
+            rl.once('close', () => resolve(results));
+            rl.close();
         });
 
         proc.on('error', (err) => {
@@ -84,32 +92,29 @@ function buildRgArgs(
     return args;
 }
 
-function parseRgOutput(stdout: string, workspaceRoot: string): SearchResult[] {
-    const results: SearchResult[] = [];
-    const lines = stdout.split('\n');
+/**
+ * P7.4: 纯函数,解析单行 ripgrep 输出。
+ * 格式: `./relative/path:lineNumber:column:content`
+ * 返回 null 表示该行不是 match(空行或格式不符,例如 stderr 泄漏)。
+ */
+export function parseRgLine(line: string, workspaceRoot: string): SearchResult | null {
+    if (!line.trim()) { return null; }
 
-    for (const line of lines) {
-        if (!line.trim()) { continue; }
+    const match = line.match(/^(.+?):(\d+):(\d+):(.*)$/);
+    if (!match) { return null; }
 
-        // Format: ./relative/path:lineNumber:column:content
-        const match = line.match(/^(.+?):(\d+):(\d+):(.*)$/);
-        if (!match) { continue; }
+    const [, rawPath, lineStr, colStr, content] = match;
+    const relativePath = rawPath.replace(/^\.[\\/]/, '');
+    const filePath = path.resolve(workspaceRoot, relativePath);
 
-        const [, rawPath, lineStr, colStr, content] = match;
-        const relativePath = rawPath.replace(/^\.[\\/]/, '');
-        const filePath = path.resolve(workspaceRoot, relativePath);
-
-        results.push({
-            filePath,
-            relativePath,
-            lineNumber: parseInt(lineStr, 10),
-            lineContent: content,
-            matchStart: parseInt(colStr, 10) - 1,
-            matchLength: 0,
-        });
-    }
-
-    return results;
+    return {
+        filePath,
+        relativePath,
+        lineNumber: parseInt(lineStr, 10),
+        lineContent: content,
+        matchStart: parseInt(colStr, 10) - 1,
+        matchLength: 0,
+    };
 }
 
 export async function executeSearchWithIndex(
