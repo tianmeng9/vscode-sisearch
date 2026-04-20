@@ -41,6 +41,110 @@
 | `test/suite/streamingSyncIntegration.test.ts` | **Create** | 5000-file smoke + cancel/resume. |
 | `src/symbolParser.ts` | **Modify** (Task 10) | Revert `createReusableParser` false-lead; restore per-file parser instantiation. |
 | `src/sync/parseWorker.ts` | **Modify** (Task 10) | Revert to `parseSymbols` call; drop `createReusableParser` usage. |
+| `test/runTest.ts` | **Modify** (Task 0) | Make the file self-invoke `run()` when executed directly, so `npm test` actually runs tests. |
+| `package.json` | **Modify** (Task 0) | Change `test` script to run node-safe tests directly via mocha, and add `test:all` that still tries the full suite (documents why some fail outside VS Code). |
+
+---
+
+## Task 0: Fix baseline test harness (prerequisite)
+
+**Background:** On this branch baseline, `npm test` is a silent no-op because `out/test/runTest.js` only exports `run()` without invoking it. Several test files transitively import `vscode` (e.g. `composition.test.ts` via `src/symbolIndex.ts`), so they can only run under an extension-host harness. This task establishes a **working TDD baseline** for the node-only portion of the test suite — which covers every file touched by Tasks 1-11.
+
+**Files:**
+- Modify: `package.json` (scripts)
+- Modify: `test/runTest.ts` (self-invoke + narrower glob)
+
+- [ ] **Step 1: Probe current state**
+
+Run:
+```bash
+npm run compile
+node ./out/test/runTest.js; echo "exit=$?"
+```
+Expected: exit 0 with NO test output (confirms current harness is a no-op).
+
+- [ ] **Step 2: Rewrite `test/runTest.ts`**
+
+Replace the file contents with:
+
+```ts
+// test/runTest.ts
+// 仓库的测试是一组 Mocha (tdd UI) 测试。许多测试间接导入 `vscode`,
+// 只能在扩展宿主里跑(有 @vscode/test-electron 可接入,但该项目目前没用)。
+// 本 runner 只跑不依赖 vscode 的 test 文件,它们覆盖了 storage / sync /
+// worker pool / parser 等非 UI 路径,也就是 streaming shard-write 重构影响的所有表面。
+//
+// VSCODE_HOST_SUITE=1 时跑全部文件,用于日后接入 test-electron 再扩展。
+import * as path from 'path';
+import * as fs from 'fs';
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const Mocha = require('mocha');
+
+// 需要 vscode 运行时的测试——在纯 Node 下必然失败
+const VSCODE_ONLY_TESTS = new Set<string>([
+    'commands.test.js',
+    'composition.test.js',
+    'navigation.test.js',
+    'searchEngine.test.js',
+    'searchEngineAbort.test.js',
+    'searchEngineParsing.test.js',
+    'symbolIndexFacade.test.js',
+]);
+
+export function run(): Promise<void> {
+    const mocha = new Mocha({ ui: 'tdd', color: true });
+    const testsRoot = path.resolve(__dirname, 'suite');
+    const includeHost = process.env.VSCODE_HOST_SUITE === '1';
+
+    return new Promise<void>((resolve, reject) => {
+        const files = fs.readdirSync(testsRoot)
+            .filter((f: string) => f.endsWith('.test.js'))
+            .filter((f: string) => includeHost ? true : !VSCODE_ONLY_TESTS.has(f));
+        files.forEach((f: string) => mocha.addFile(path.resolve(testsRoot, f)));
+
+        mocha.run((failures: number) => {
+            if (failures > 0) {
+                reject(new Error(`${failures} tests failed.`));
+            } else {
+                resolve();
+            }
+        });
+    });
+}
+
+// 直接 node 执行时自调用(之前的版本只 export 就结束了,所以 npm test 是个空操作)。
+if (require.main === module) {
+    run().catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error(err);
+        process.exit(1);
+    });
+}
+```
+
+- [ ] **Step 3: Build & run — expect 69+ tests PASS**
+
+```bash
+npm run compile
+npm test
+```
+
+Expected: mocha prints a summary like `69 passing` (or more once plan-added tests land). Exit 0.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add test/runTest.ts
+git commit -m "test: make runTest self-invoke and filter vscode-host suites"
+```
+
+- [ ] **Step 5: Sanity grep for regressions**
+
+```bash
+grep -n "node ./out/test/runTest.js" package.json
+```
+Expected: the `test` script line unchanged (`"test": "node ./out/test/runTest.js"`). No other changes to package.json in this task.
 
 ---
 
