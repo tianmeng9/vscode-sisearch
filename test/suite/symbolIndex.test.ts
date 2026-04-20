@@ -118,6 +118,35 @@ suite('SymbolIndex', () => {
         assert.strictEqual(partial.length, 2);
     });
 
+    test('substring + caseSensitive=true matches uppercase query against uppercase symbol (N7 regression)', () => {
+        const index = new InMemorySymbolIndex();
+        index.update('a.c', [makeSymbol('FooBar', 'a.c', 1)]);
+        index.update('b.c', [makeSymbol('foobar', 'b.c', 2)]);
+
+        const results = index.search('Foo', '/workspace', { caseSensitive: true, wholeWord: false, regex: false });
+        assert.strictEqual(results.length, 1, 'caseSensitive "Foo" should match FooBar only');
+        assert.strictEqual(results[0].relativePath, 'a.c');
+    });
+
+    test('regex + caseSensitive=true matches uppercase pattern against uppercase symbol (N7 regression)', () => {
+        const index = new InMemorySymbolIndex();
+        index.update('a.c', [makeSymbol('FOOBAR', 'a.c', 1)]);
+        index.update('b.c', [makeSymbol('foobar', 'b.c', 2)]);
+
+        const results = index.search('FOO', '/workspace', { caseSensitive: true, wholeWord: false, regex: true });
+        assert.strictEqual(results.length, 1, 'caseSensitive /FOO/ should match FOOBAR only');
+        assert.strictEqual(results[0].relativePath, 'a.c');
+    });
+
+    test('regex caseSensitive=false is backward compatible (N7 regression)', () => {
+        const index = new InMemorySymbolIndex();
+        index.update('a.c', [makeSymbol('FooBar', 'a.c', 1)]);
+        index.update('b.c', [makeSymbol('foobar', 'b.c', 2)]);
+
+        const results = index.search('foo', '/workspace', { caseSensitive: false, wholeWord: false, regex: true });
+        assert.strictEqual(results.length, 2, 'caseInsensitive /foo/ should match both FooBar and foobar');
+    });
+
     test('remove cleans up nameIndex so later searches do not return stale hits', () => {
         const index = new InMemorySymbolIndex();
         index.update('a.c', [makeSymbol('gone', 'a.c', 1)]);

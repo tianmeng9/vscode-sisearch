@@ -66,28 +66,29 @@ export class InMemorySymbolIndex {
                 push(symbol);
             }
         } else if (options.regex) {
-            // 正则匹配 —— 按 name 桶过滤，命中才遍历其 symbol 数组
-            let re: RegExp;
+            // 正则匹配 —— 桶粗过滤永远 case-insensitive(因桶名本身就是 lowercase),
+            // 精确过滤用原 query 的 flag。这样 caseSensitive=true + 含大写 pattern
+            // 不会被 lowercase 桶误跳。
+            let coarseRe: RegExp;
+            let exactRe: RegExp;
             try {
-                re = new RegExp(query, options.caseSensitive ? '' : 'i');
+                coarseRe = new RegExp(query, 'i');
+                exactRe = options.caseSensitive ? new RegExp(query) : coarseRe;
             } catch {
                 return [];
             }
             for (const [name, symbols] of this.nameIndex) {
-                if (!re.test(name)) { continue; }
-                if (options.caseSensitive) {
-                    for (const symbol of symbols) {
-                        if (re.test(symbol.name)) { push(symbol); }
-                    }
-                } else {
-                    for (const symbol of symbols) { push(symbol); }
+                if (!coarseRe.test(name)) { continue; }
+                for (const symbol of symbols) {
+                    if (exactRe.test(symbol.name)) { push(symbol); }
                 }
             }
         } else {
-            // 子串匹配 —— 按 name 桶过滤再 push，避免遍历所有 symbols
-            const needle = options.caseSensitive ? query : query.toLowerCase();
+            // 子串匹配 —— 桶粗过滤永远 lowercase(桶名本身就是 lowercase),
+            // 精确过滤用原 query。caseSensitive=true + 含大写 query 不再被误跳。
+            const coarseNeedle = query.toLowerCase();
             for (const [name, symbols] of this.nameIndex) {
-                if (!name.includes(options.caseSensitive ? needle : needle)) { continue; }
+                if (!name.includes(coarseNeedle)) { continue; }
                 if (options.caseSensitive) {
                     for (const symbol of symbols) {
                         if (symbol.name.includes(query)) { push(symbol); }
