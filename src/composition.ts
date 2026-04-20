@@ -59,7 +59,7 @@ export function updateStatusBar(item: vscode.StatusBarItem, index: SymbolIndex):
 export function attachWorkerPool(
     context: vscode.ExtensionContext,
     symbolIndex: SymbolIndex,
-): WorkerPool {
+): void {
     const poolSize = Math.max(2, Math.min(8, os.cpus().length - 1));
     const workerPool = new WorkerPool({
         size: poolSize,
@@ -67,13 +67,6 @@ export function attachWorkerPool(
     });
     symbolIndex.setWorkerPool(workerPool);
     context.subscriptions.push({ dispose: () => { void workerPool.dispose(); } });
-    return workerPool;
-}
-
-export interface WorkspaceBindingResult {
-    workspaceRoot: string;
-    extensions: string[];
-    autoSync: AutoSyncController;
 }
 
 /**
@@ -88,9 +81,9 @@ export function bindWorkspace(
     context: vscode.ExtensionContext,
     symbolIndex: SymbolIndex,
     refreshStatus: () => void,
-): WorkspaceBindingResult | undefined {
+): void {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!workspaceRoot) { return undefined; }
+    if (!workspaceRoot) { return; }
 
     symbolIndex.loadFromDisk(workspaceRoot).then(loaded => {
         if (loaded) { refreshStatus(); }
@@ -135,6 +128,4 @@ export function bindWorkspace(
 
     const statusTimer = setInterval(refreshStatus, 2000);
     context.subscriptions.push({ dispose: () => clearInterval(statusTimer) });
-
-    return { workspaceRoot, extensions, autoSync };
 }
