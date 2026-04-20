@@ -46,21 +46,54 @@ export class InMemorySymbolIndex {
     }
 
     search(query: string, _workspaceRoot: string, options: SearchOptions): SearchResult[] {
-        const needle = options.caseSensitive ? query : query.toLowerCase();
         const results: SearchResult[] = [];
+        const push = (symbol: SymbolEntry) => {
+            results.push({
+                filePath: symbol.filePath,
+                relativePath: symbol.relativePath,
+                lineNumber: symbol.lineNumber,
+                lineContent: symbol.lineContent,
+                matchStart: symbol.lineContent.indexOf(symbol.name),
+                matchLength: symbol.name.length,
+            });
+        };
 
-        for (const symbols of this.symbolsByFile.values()) {
-            for (const symbol of symbols) {
-                const haystack = options.caseSensitive ? symbol.name : symbol.name.toLowerCase();
-                if (haystack === needle || haystack.includes(needle)) {
-                    results.push({
-                        filePath: symbol.filePath,
-                        relativePath: symbol.relativePath,
-                        lineNumber: symbol.lineNumber,
-                        lineContent: symbol.lineContent,
-                        matchStart: symbol.lineContent.indexOf(symbol.name),
-                        matchLength: symbol.name.length,
-                    });
+        if (options.wholeWord && !options.regex) {
+            // 精确匹配 —— 直接走 nameIndex 哈希，O(1) 查桶
+            const candidates = this.nameIndex.get(query.toLowerCase()) ?? [];
+            for (const symbol of candidates) {
+                if (options.caseSensitive && symbol.name !== query) { continue; }
+                push(symbol);
+            }
+        } else if (options.regex) {
+            // 正则匹配 —— 按 name 桶过滤，命中才遍历其 symbol 数组
+            let re: RegExp;
+            try {
+                re = new RegExp(query, options.caseSensitive ? '' : 'i');
+            } catch {
+                return [];
+            }
+            for (const [name, symbols] of this.nameIndex) {
+                if (!re.test(name)) { continue; }
+                if (options.caseSensitive) {
+                    for (const symbol of symbols) {
+                        if (re.test(symbol.name)) { push(symbol); }
+                    }
+                } else {
+                    for (const symbol of symbols) { push(symbol); }
+                }
+            }
+        } else {
+            // 子串匹配 —— 按 name 桶过滤再 push，避免遍历所有 symbols
+            const needle = options.caseSensitive ? query : query.toLowerCase();
+            for (const [name, symbols] of this.nameIndex) {
+                if (!name.includes(options.caseSensitive ? needle : needle)) { continue; }
+                if (options.caseSensitive) {
+                    for (const symbol of symbols) {
+                        if (symbol.name.includes(query)) { push(symbol); }
+                    }
+                } else {
+                    for (const symbol of symbols) { push(symbol); }
                 }
             }
         }
