@@ -25,22 +25,29 @@ suite('composition.updateStatusBar', () => {
     test('renders none state with generic prompt', () => {
         const bar = makeStatusBar();
         updateStatusBar(bar as any, makeIndex('none'));
-        assert.strictEqual(bar.text, '$(database) Index: None');
+        // N16: 用 includes 替代 exact-string,避免文案微调破测
+        assert.ok(bar.text.includes('Index: None'));
+        assert.ok(bar.text.includes('$(database)'));
         assert.ok((bar.tooltip as string).includes('synchronize'));
     });
 
-    test('renders building state with spinner icon', () => {
+    test('renders building state with spinner icon and tooltip', () => {
         const bar = makeStatusBar();
         updateStatusBar(bar as any, makeIndex('building'));
         assert.ok(bar.text.includes('sync~spin'));
         assert.ok(bar.text.includes('Syncing'));
+        // N14: 补齐 tooltip 断言
+        assert.ok((bar.tooltip as string).includes('being built'));
     });
 
     test('renders ready state with symbol count and file count in tooltip', () => {
         const bar = makeStatusBar();
-        updateStatusBar(bar as any, makeIndex('ready', 12, 3456));
-        assert.ok(bar.text.includes('3,456 symbols'));
-        assert.ok((bar.tooltip as string).includes('3456 symbols'));
+        // N15: 用 < 1000 的符号数,avoid toLocaleString 千分位分隔符 locale 差异
+        updateStatusBar(bar as any, makeIndex('ready', 12, 456));
+        // text 走 toLocaleString;456 < 1000 在所有 locale 都不会插入分隔符
+        assert.ok(bar.text.includes('456 symbols'));
+        // tooltip 用普通模板串,与 locale 无关
+        assert.ok((bar.tooltip as string).includes('456 symbols'));
         assert.ok((bar.tooltip as string).includes('12 files'));
     });
 
