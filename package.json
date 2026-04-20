@@ -185,11 +185,6 @@
           ],
           "description": "Glob patterns to exclude from search"
         },
-        "siSearch.previewContextLines": {
-          "type": "number",
-          "default": 5,
-          "description": "Number of context lines in hover preview"
-        },
         "siSearch.highlightColors": {
           "type": "array",
           "default": [
