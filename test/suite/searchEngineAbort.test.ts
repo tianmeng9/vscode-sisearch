@@ -6,6 +6,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { rgPath } from '@vscode/ripgrep';
 import { executeSearch } from '../../src/search/searchEngine';
 
 /** 搭建一个临时 workspace,铺 N 个 .c 文件,每文件 1 行命中 "needle"。 */
@@ -17,8 +18,19 @@ function makeWorkspace(fileCount: number): string {
     return ws;
 }
 
-suite('executeSearch AbortSignal (R6 V1)', () => {
+suite('executeSearch AbortSignal (R6 V1)', function () {
     const defaultOptions = { caseSensitive: false, wholeWord: false, regex: false };
+
+    // R7 §3.3: CI 镜像可能无 ripgrep 二进制 —— 在 suite 入口检测 rgPath 可用性,
+    // 缺失或不可执行时整 suite skip,避免 CI 红。本地开发因 @vscode/ripgrep 自带 rg
+    // 几乎必然通过。
+    suiteSetup(function () {
+        try {
+            fs.accessSync(rgPath, fs.constants.X_OK);
+        } catch {
+            this.skip();
+        }
+    });
 
     test('rejects with AbortError when signal already aborted before spawn', async () => {
         const ws = makeWorkspace(3);
