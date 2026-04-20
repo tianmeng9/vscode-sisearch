@@ -108,7 +108,6 @@ FileWatcher ── 标记 脏文件/删除文件 ── SymbolIndex
 | `siSearch.includeFileExtensions` | `string[]` | `[".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".inl"]` | 纳入搜索和符号索引的文件扩展名。 |
 | `siSearch.includePaths` | `string[]` | `[]` | 符号索引仅扫描的子目录（如 `["src/wifi", "src/drivers"]`）。为空表示扫描整个工作区。 |
 | `siSearch.excludePatterns` | `string[]` | `["**/build/**", "**/.git/**", "**/node_modules/**"]` | 从搜索中排除的 glob 模式。 |
-| `siSearch.previewContextLines` | `number` | `5` | 悬浮预览中匹配行上下显示的上下文行数。 |
 | `siSearch.highlightColors` | `string[]` | `["cyan", "pink", "lightgreen", "magenta", "cornflowerblue", "orange", "green", "red"]` | 手动高亮标记的颜色列表，按顺序轮换使用。 |
 | `siSearch.highlightBox` | `boolean` | `true` | `true` 时高亮使用边框样式；`false` 时使用背景填充样式。 |
 | `siSearch.navigationWrap` | `boolean` | `true` | 导航到最后/最前一个结果时是否循环跳转。 |

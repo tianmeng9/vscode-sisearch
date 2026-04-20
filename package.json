@@ -185,11 +185,6 @@
           ],
           "description": "Glob patterns to exclude from search"
         },
-        "siSearch.previewContextLines": {
-          "type": "number",
-          "default": 5,
-          "description": "Number of context lines in hover preview"
-        },
         "siSearch.highlightColors": {
           "type": "array",
           "default": [
@@ -218,6 +213,16 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically sync dirty files when saving"
+        },
+        "siSearch.autoSync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic sync after file changes"
+        },
+        "siSearch.autoSyncDelay": {
+          "type": "number",
+          "default": 5000,
+          "description": "Debounce delay in milliseconds before auto sync triggers"
         }
       }
     }
@@ -227,7 +232,10 @@
     "vscode:prepublish": "npm run copy-wasm && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "bench:sync": "node ./out/test/benchmark/syncBench.js",
+    "bench:search": "node ./out/test/benchmark/searchBench.js",
+    "bench:storage": "node ./out/test/benchmark/storageBench.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.0",
@@ -238,6 +246,7 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
+    "@msgpack/msgpack": "^3.1.3",
     "@vscode/codicons": "^0.0.45",
     "@vscode/ripgrep": "^1.15.0",
     "shiki": "^4.0.2",

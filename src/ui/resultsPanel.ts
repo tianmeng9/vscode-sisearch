@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { ResultsPanelEntry, ResultsPanelMessage, PreviewResponse } from './types';
+import { ResultsPanelEntry, ResultsPanelMessage, PreviewResponse } from '../types';
 
 export class ResultsPanel {
     private panel: vscode.WebviewPanel | undefined;

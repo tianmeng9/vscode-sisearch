@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { SearchStore } from '../../src/searchStore';
+import { SearchStore } from '../../src/search/searchStore';
 import { SearchResult, SearchOptions } from '../../src/types';
 
 function makeResult(file: string, line: number, content: string): SearchResult {
@@ -112,5 +112,17 @@ suite('SearchStore', () => {
         store.onChange(() => { fired = true; });
         store.addSearch('test', defaultOpts, [makeResult('a.c', 1, 'x')], 'replace');
         assert.ok(fired);
+    });
+
+    test('getActiveResultsPanelEntries keeps stable global indexes', () => {
+        const results = [
+            makeResult('a.c', 1, 'foo'),
+            makeResult('a.c', 2, 'bar'),
+            makeResult('b.c', 1, 'baz'),
+        ];
+        store.addSearch('x', defaultOpts, results, 'replace');
+        const entries = store.getActiveResultsPanelEntries();
+
+        assert.deepStrictEqual(entries.map(e => e.globalIndex), [0, 1, 2]);
     });
 });

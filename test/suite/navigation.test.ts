@@ -1,6 +1,6 @@
 // test/suite/navigation.test.ts
 import * as assert from 'assert';
-import { SearchStore } from '../../src/searchStore';
+import { SearchStore } from '../../src/search/searchStore';
 import { SearchResult, SearchOptions } from '../../src/types';
 
 function makeResult(file: string, line: number): SearchResult {

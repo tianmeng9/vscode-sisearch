@@ -108,7 +108,6 @@ All settings are under the `siSearch.*` namespace in VS Code settings.
 | `siSearch.includeFileExtensions` | `string[]` | `[".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".inl"]` | File extensions to include in search and symbol indexing. |
 | `siSearch.includePaths` | `string[]` | `[]` | Subdirectories to include in symbol indexing (e.g. `["src/wifi", "src/drivers"]`). Empty means entire workspace. |
 | `siSearch.excludePatterns` | `string[]` | `["**/build/**", "**/.git/**", "**/node_modules/**"]` | Glob patterns to exclude from search. |
-| `siSearch.previewContextLines` | `number` | `5` | Number of context lines shown above and below the matched line in hover preview. |
 | `siSearch.highlightColors` | `string[]` | `["cyan", "pink", "lightgreen", "magenta", "cornflowerblue", "orange", "green", "red"]` | Color palette for manual highlight marking. Colors cycle in order. |
 | `siSearch.highlightBox` | `boolean` | `true` | When `true`, highlights use a border-only box style; when `false`, highlights use solid background fill. |
 | `siSearch.navigationWrap` | `boolean` | `true` | Wrap around to the first/last result when navigating past the end/beginning. |

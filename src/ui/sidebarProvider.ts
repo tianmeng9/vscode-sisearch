@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { SidebarMessage } from './types';
+import { SidebarMessage } from '../types';
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'siSearch.searchPanel';

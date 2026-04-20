@@ -12,6 +12,16 @@
     let highlightBoxMode = true;
     let contextMenu = null;
 
+    // Virtual scroll state
+    const VS = {
+        rowHeight: 28,
+        overscan: 8,
+    };
+
+    resultsList.addEventListener('scroll', () => {
+        requestAnimationFrame(rerenderContent);
+    });
+
     window.addEventListener('message', (event) => {
         const msg = event.data;
         switch (msg.command) {
@@ -80,72 +90,98 @@
         });
     }
 
-    function rerenderContent() {
-        resultsList.innerHTML = '';
+    function createRow(entry) {
+        const row = document.createElement('div');
+        row.className = 'result-line';
+        row.dataset.index = String(entry.globalIndex);
+        row.dataset.file = entry.filePath;
+        row.dataset.line = String(entry.lineNumber);
 
-        for (const entry of allEntries) {
-            const row = document.createElement('div');
-            row.className = 'result-line';
-            row.dataset.index = String(entry.globalIndex);
-            row.dataset.file = entry.filePath;
-            row.dataset.line = String(entry.lineNumber);
+        const jumpBtn = document.createElement('span');
+        jumpBtn.className = 'jump-btn';
+        jumpBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/><line x1="1" y1="8.5" x2="7" y2="8.5"/><polyline points="5 6.5 7 8.5 5 10.5"/></svg>';
+        jumpBtn.title = 'Jump to source';
+        jumpBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            clearTimeout(hoverTimer);
+            hoverPreview.style.display = 'none';
+            vscode.postMessage({
+                command: 'jumpToFile',
+                filePath: entry.filePath,
+                lineNumber: entry.lineNumber,
+            });
+        });
 
-            const jumpBtn = document.createElement('span');
-            jumpBtn.className = 'jump-btn';
-            jumpBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/><line x1="1" y1="8.5" x2="7" y2="8.5"/><polyline points="5 6.5 7 8.5 5 10.5"/></svg>';
-            jumpBtn.title = 'Jump to source';
-            jumpBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                clearTimeout(hoverTimer);
-                hoverPreview.style.display = 'none';
+        const pathSpan = document.createElement('span');
+        pathSpan.className = 'file-path';
+        pathSpan.textContent = entry.relativePath;
+
+        const lineSpan = document.createElement('span');
+        lineSpan.className = 'line-num';
+        lineSpan.textContent = '<Line ' + entry.lineNumber + '>:';
+
+        const contentSpan = document.createElement('span');
+        contentSpan.className = 'line-content';
+        contentSpan.innerHTML = highlightContent(entry.lineContent);
+
+        row.appendChild(jumpBtn);
+        row.appendChild(pathSpan);
+        row.appendChild(lineSpan);
+        row.appendChild(contentSpan);
+
+        // 只有悬停在代码部分才触发预览
+        contentSpan.addEventListener('mouseenter', () => {
+            hoverRow = contentSpan;
+            isMouseInPreview = false;
+            hoverTimer = setTimeout(() => {
                 vscode.postMessage({
-                    command: 'jumpToFile',
+                    command: 'requestPreview',
                     filePath: entry.filePath,
                     lineNumber: entry.lineNumber,
                 });
-            });
+            }, 500);
+        });
+        contentSpan.addEventListener('mouseleave', () => {
+            hoverRow = null;
+            clearTimeout(hoverTimer);
+            setTimeout(() => {
+                if (!isMouseInPreview && !hoverRow) {
+                    hoverPreview.style.display = 'none';
+                }
+            }, 100);
+        });
 
-            const pathSpan = document.createElement('span');
-            pathSpan.className = 'file-path';
-            pathSpan.textContent = entry.relativePath;
+        return row;
+    }
 
-            const lineSpan = document.createElement('span');
-            lineSpan.className = 'line-num';
-            lineSpan.textContent = '<Line ' + entry.lineNumber + '>:';
+    function rerenderContent() {
+        const total = allEntries.length;
+        const scrollTop = resultsList.scrollTop;
+        const viewportHeight = resultsList.clientHeight || 600;
+        const visibleCount = Math.ceil(viewportHeight / VS.rowHeight);
 
-            const contentSpan = document.createElement('span');
-            contentSpan.className = 'line-content';
-            contentSpan.innerHTML = highlightContent(entry.lineContent);
+        const start = Math.max(0, Math.floor(scrollTop / VS.rowHeight) - VS.overscan);
+        const end = Math.min(total, start + visibleCount + VS.overscan * 2);
 
-            row.appendChild(jumpBtn);
-            row.appendChild(pathSpan);
-            row.appendChild(lineSpan);
-            row.appendChild(contentSpan);
+        const spacerTopPx = start * VS.rowHeight;
+        const spacerBottomPx = Math.max(0, (total - end) * VS.rowHeight);
 
-            // 只有悬停在代码部分才触发预览
-            contentSpan.addEventListener('mouseenter', function (e) {
-                hoverRow = contentSpan;
-                isMouseInPreview = false;
-                hoverTimer = setTimeout(() => {
-                    vscode.postMessage({
-                        command: 'requestPreview',
-                        filePath: entry.filePath,
-                        lineNumber: entry.lineNumber,
-                    });
-                }, 500);
-            });
-            contentSpan.addEventListener('mouseleave', () => {
-                hoverRow = null;
-                clearTimeout(hoverTimer);
-                setTimeout(() => {
-                    if (!isMouseInPreview && !hoverRow) {
-                        hoverPreview.style.display = 'none';
-                    }
-                }, 100);
-            });
+        const fragment = document.createDocumentFragment();
 
-            resultsList.appendChild(row);
+        const topSpacer = document.createElement('div');
+        topSpacer.style.height = spacerTopPx + 'px';
+        fragment.appendChild(topSpacer);
+
+        for (let i = start; i < end; i++) {
+            fragment.appendChild(createRow(allEntries[i]));
         }
+
+        const bottomSpacer = document.createElement('div');
+        bottomSpacer.style.height = spacerBottomPx + 'px';
+        fragment.appendChild(bottomSpacer);
+
+        resultsList.innerHTML = '';
+        resultsList.appendChild(fragment);
     }
 
     function highlightContent(text) {
@@ -202,13 +238,18 @@
     }
 
     function highlightNavEntry(index) {
+        // With virtual scrolling, first scroll so the target row enters the viewport,
+        // then rerender, then find and highlight the DOM element.
+        const targetScrollTop = Math.max(0, index * VS.rowHeight - resultsList.clientHeight / 2);
+        resultsList.scrollTop = targetScrollTop;
+        rerenderContent();
+
         document.querySelectorAll('.result-line.nav-active').forEach(function (el) {
             el.classList.remove('nav-active');
         });
         var row = document.querySelector('.result-line[data-index="' + index + '"]');
         if (row) {
             row.classList.add('nav-active');
-            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
     }
 

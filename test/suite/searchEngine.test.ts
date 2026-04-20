@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { executeSearch } from '../../src/searchEngine';
+import { executeSearch } from '../../src/search/searchEngine';
 import { SearchOptions } from '../../src/types';
 
 suite('SearchEngine', () => {

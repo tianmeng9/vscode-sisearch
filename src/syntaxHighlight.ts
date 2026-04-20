@@ -211,3 +211,24 @@ export async function tokenizeFile(
 function escapeHtml(text: string): string {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+// ── LRU tokenize cache (re-exported from syntaxHighlightCache) ──────────────
+export { createTokenizeCache, TokenizeCache } from './syntaxHighlightCache';
+
+/**
+ * 只 tokenize 以 centerLine 为中心前后各 50 行的窗口，降低全文件 tokenize 开销。
+ */
+export async function tokenizePreviewWindow(
+    fileContent: string,
+    languageId: string,
+    centerLine: number,
+): Promise<TokenizeResult> {
+    const lines = fileContent.split('\n');
+    const start = Math.max(0, centerLine - 51);
+    const end = Math.min(lines.length, centerLine + 50);
+    const window = lines.slice(start, end).join('\n');
+    const result = await tokenizeFile(window, languageId);
+    // Adjust line numbers to reflect real file positions
+    const adjusted = result.lines.map((l, i) => ({ ...l, num: start + i + 1 }));
+    return { ...result, lines: adjusted };
+}

@@ -1,6 +1,6 @@
-// src/editorDecorations.ts
+// src/ui/editorDecorations.ts
 import * as vscode from 'vscode';
-import { SearchResult } from './types';
+import { SearchResult } from '../types';
 
 export interface ManualHighlight {
     text: string;

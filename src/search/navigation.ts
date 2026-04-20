@@ -1,7 +1,7 @@
-// src/navigation.ts
+// src/search/navigation.ts
 import * as vscode from 'vscode';
 import { SearchStore } from './searchStore';
-import { SearchResult } from './types';
+import { SearchResult } from '../types';
 
 /** 打开文件并定位到搜索结果对应的行 */
 export async function openResultInEditor(result: SearchResult): Promise<void> {

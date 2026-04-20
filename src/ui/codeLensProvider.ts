@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SearchStore } from './searchStore';
+import { SearchStore } from '../search/searchStore';
 
 export class SearchResultCodeLensProvider implements vscode.CodeLensProvider {
     private _onDidChangeCodeLenses = new vscode.EventEmitter<void>();

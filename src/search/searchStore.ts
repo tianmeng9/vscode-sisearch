@@ -1,4 +1,4 @@
-import { SearchResult, SearchOptions, SearchHistoryEntry, SearchMode, ResultsPanelEntry } from './types';
+import { SearchResult, SearchOptions, SearchHistoryEntry, SearchMode, ResultsPanelEntry } from '../types';
 
 let idCounter = 0;
 function generateId(): string {
