@@ -118,8 +118,20 @@ export class EditorDecorations {
                         keywordRanges.push({ range: new vscode.Range(startPos, endPos) });
                     }
 
+                    // hover tooltip 里嵌可点击的 command: 链接 —— VS Code 要求
+                    // MarkdownString.isTrusted=true 才会执行 command: URI。
+                    const args = encodeURIComponent(JSON.stringify({ filePath, lineNumber: result.lineNumber }));
+                    const hoverMsg = new vscode.MarkdownString(
+                        `[$(arrow-left) Jump to Search Result](command:siSearch.jumpToResult?${args} "Back to results panel")` +
+                        `  \n*or press* \`Alt+J\``,
+                        true,
+                    );
+                    hoverMsg.isTrusted = true;
+                    hoverMsg.supportThemeIcons = true;
+
                     gutterRanges.push({
                         range: new vscode.Range(lineIdx, 0, lineIdx, 0),
+                        hoverMessage: hoverMsg,
                     });
                 }
 

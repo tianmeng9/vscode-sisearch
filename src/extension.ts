@@ -4,7 +4,6 @@ import { SearchStore } from './search/searchStore';
 import { SidebarProvider } from './ui/sidebarProvider';
 import { ResultsPanel } from './ui/resultsPanel';
 import { EditorDecorations } from './ui/editorDecorations';
-import { SearchResultCodeLensProvider } from './ui/codeLensProvider';
 import { executeSearchWithIndex } from './search/searchEngine';
 import { navigateNext, navigatePrevious, openResultInEditor } from './search/navigation';
 import { tokenizeFile } from './syntaxHighlight';
@@ -21,7 +20,6 @@ export function activate(context: vscode.ExtensionContext) {
     const sidebarProvider = new SidebarProvider(context.extensionUri);
     const resultsPanel = new ResultsPanel(context.extensionUri);
     const editorDecorations = new EditorDecorations(context.extensionUri);
-    const codeLensProvider = new SearchResultCodeLensProvider(store);
     const highlightsTreeProvider = new HighlightsTreeProvider();
     const symbolIndex = new SymbolIndex();
 
@@ -41,7 +39,6 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebarProvider, { webviewOptions: { retainContextWhenHidden: true } }),
         vscode.window.registerTreeDataProvider('siSearch.highlightsView', highlightsTreeProvider),
-        vscode.languages.registerCodeLensProvider({ scheme: 'file' }, codeLensProvider),
         editorDecorations,
     );
 

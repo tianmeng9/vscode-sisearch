@@ -4,13 +4,18 @@
     const hoverPreview = document.getElementById('hoverPreview');
 
     let allEntries = [];
-    let hoverTimer = null;
-    let hoverRow = null;
-    let isMouseInPreview = false;
+    // 改为"点击触发预览":以前 hoverTimer/hoverRow 是 hover 触发的状态,
+    // 现在 anchorRow 代表预览锚定的那一行 (用于定位计算),预览一直显示到被显式关闭。
+    let anchorRow = null;
     let manualHighlights = [];
     const HIGHLIGHT_COLORS = [];
     let highlightBoxMode = true;
     let contextMenu = null;
+
+    function hidePreview() {
+        anchorRow = null;
+        hoverPreview.style.display = 'none';
+    }
 
     // Virtual scroll state
     const VS = {
@@ -103,8 +108,7 @@
         jumpBtn.title = 'Jump to source';
         jumpBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            clearTimeout(hoverTimer);
-            hoverPreview.style.display = 'none';
+            hidePreview();
             vscode.postMessage({
                 command: 'jumpToFile',
                 filePath: entry.filePath,
@@ -129,26 +133,31 @@
         row.appendChild(lineSpan);
         row.appendChild(contentSpan);
 
-        // 只有悬停在代码部分才触发预览
-        contentSpan.addEventListener('mouseenter', () => {
-            hoverRow = contentSpan;
-            isMouseInPreview = false;
-            hoverTimer = setTimeout(() => {
-                vscode.postMessage({
-                    command: 'requestPreview',
-                    filePath: entry.filePath,
-                    lineNumber: entry.lineNumber,
+        // 点击代码部分 (左键) 触发预览;hover 不再触发 —— 以前 hover 会遮挡下方结果,
+        // 用户滑动浏览时非常烦。改成显式点击后,预览会一直显示到 hidePreview() 被调用
+        // (见下方全局 keydown / contextmenu / 滚动等监听器)。
+        contentSpan.addEventListener('click', (e) => {
+            // 左键 (button 0);不要拦截 Ctrl/Shift 这种选区扩展,让用户还能选择文本。
+            if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) { return; }
+            // 如果用户其实在做文本选择 (按下-拖动-松开) 就别触发预览。
+            const sel = window.getSelection();
+            if (sel && sel.toString().length > 0) { return; }
+
+            anchorRow = contentSpan;
+            // 设置导航高亮 —— 方便之后 Alt+J 找到"当前结果"。
+            const idx = Number(row.dataset.index);
+            if (!Number.isNaN(idx)) {
+                document.querySelectorAll('.result-line.nav-active').forEach(function (el) {
+                    el.classList.remove('nav-active');
                 });
-            }, 500);
-        });
-        contentSpan.addEventListener('mouseleave', () => {
-            hoverRow = null;
-            clearTimeout(hoverTimer);
-            setTimeout(() => {
-                if (!isMouseInPreview && !hoverRow) {
-                    hoverPreview.style.display = 'none';
-                }
-            }, 100);
+                row.classList.add('nav-active');
+            }
+
+            vscode.postMessage({
+                command: 'requestPreview',
+                filePath: entry.filePath,
+                lineNumber: entry.lineNumber,
+            });
         });
 
         return row;
@@ -253,16 +262,49 @@
         }
     }
 
-    hoverPreview.addEventListener('mouseenter', () => {
-        isMouseInPreview = true;
-    });
-    hoverPreview.addEventListener('mouseleave', () => {
-        isMouseInPreview = false;
-        setTimeout(() => {
-            if (!hoverRow) {
-                hoverPreview.style.display = 'none';
+    // 关闭预览的各种触发路径:
+    //   - 任意键盘键 (最自然的"让它消失"的操作)
+    //   - 右键 (用户原本就用右键做上下文菜单,点右键意味着"我不想看这个了")
+    //   - 滚动搜索结果列表 (继续浏览意图)
+    //   - 点击预览框之外的任何地方 (也可能是左键点击别处)
+    document.addEventListener('keydown', (e) => {
+        // Alt+J:在搜索结果面板里跳到"当前选中行"对应的源代码位置。
+        // 双向跳转的"来"方向:编辑器里按 Alt+J 跳到面板 (在 package.json 里绑的 editorTextFocus 时的快捷键);
+        // 这里是"去"方向:面板里按 Alt+J 跳回编辑器。
+        if (e.altKey && (e.key === 'j' || e.key === 'J')) {
+            e.preventDefault();
+            const active = document.querySelector('.result-line.nav-active');
+            if (active) {
+                const filePath = active.dataset.file;
+                const lineNumber = Number(active.dataset.line);
+                if (filePath && !Number.isNaN(lineNumber)) {
+                    hidePreview();
+                    vscode.postMessage({ command: 'jumpToFile', filePath, lineNumber });
+                }
             }
-        }, 100);
+            return;
+        }
+        // 其他任意按键:关预览。
+        if (hoverPreview.style.display !== 'none') {
+            hidePreview();
+        }
+    }, true); // capture 阶段,确保先于其他处理
+
+    document.addEventListener('mousedown', (e) => {
+        // 右键:关预览 (但 contextmenu 菜单的显示走的是 contextmenu 事件,下方已有处理)
+        if (e.button === 2) { hidePreview(); return; }
+        // 左键点击在预览框之外:关预览
+        if (e.button === 0 && !hoverPreview.contains(e.target)) {
+            // 不过,如果点的就是另一个 content-span (即要显示新预览),让它自己覆盖,别关旧的闪一下。
+            // 判断方法:目标是否属于某个 .line-content。
+            const isContent = e.target && e.target.closest && e.target.closest('.line-content');
+            if (!isContent) { hidePreview(); }
+        }
+    }, true);
+
+    resultsList.addEventListener('scroll', () => {
+        // 滚动就关,避免遮挡下方结果 —— 这是用户反馈的核心诉求。
+        hidePreview();
     });
 
     function showPreviewPopup(data) {
@@ -311,8 +353,8 @@
         var viewW = window.innerWidth;
         var top, left;
 
-        if (hoverRow) {
-            var rowRect = hoverRow.getBoundingClientRect();
+        if (anchorRow) {
+            var rowRect = anchorRow.getBoundingClientRect();
             var spaceAbove = rowRect.top;
             var spaceBelow = viewH - rowRect.bottom;
 
