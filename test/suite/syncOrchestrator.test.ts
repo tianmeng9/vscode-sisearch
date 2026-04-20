@@ -23,6 +23,7 @@ suite('syncOrchestrator', () => {
             index: {
                 update(file: string, symbols: unknown[]) { updates.push(`${file}:${symbols.length}`); },
                 remove(file: string) { removals.push(file); },
+                applyMetadata: () => {},
             },
             storage: { saveFull: async () => {} },
             getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
@@ -40,7 +41,7 @@ suite('syncOrchestrator', () => {
             scanFiles: async () => [],
             classify: async () => ({ toProcess: [], toDelete: [] }),
             workerPool: { parse: async () => { parseCalled = true; return { symbols: [], metadata: [], errors: [] }; } },
-            index: { update: () => {}, remove: () => {} },
+            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
             storage: { saveFull: async () => {} },
             getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
         });
@@ -68,7 +69,7 @@ suite('syncOrchestrator', () => {
                     errors: [],
                 }),
             },
-            index: { update: () => {}, remove: () => {} },
+            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
             storage: {
                 saveFull: async () => { saveFullCalls.push(1); },
                 saveDirty: async (_snap, paths) => { saveDirtyCalls.push({ paths: [...paths] }); },
@@ -90,7 +91,7 @@ suite('syncOrchestrator', () => {
             scanFiles: async () => [],
             classify: async () => ({ toProcess: [], toDelete: ['x.c'] }),
             workerPool: { parse: async () => ({ symbols: [], metadata: [], errors: [] }) },
-            index: { update: () => {}, remove: () => {} },
+            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
             storage: { saveFull: async () => { saveFullCalled = true; } },
             getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
         });
@@ -138,7 +139,7 @@ suite('syncOrchestrator', () => {
             scanFiles: async () => [],
             classify: async () => ({ toProcess: [], toDelete: [] }),
             workerPool: { parse: async () => ({ symbols: [], metadata: [], errors: [] }) },
-            index: { update: () => {}, remove: () => {} },
+            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
             storage: {
                 saveFull: async () => { anySaveCalled = true; },
                 saveDirty: async () => { anySaveCalled = true; },

@@ -35,6 +35,7 @@ async function main(): Promise<void> {
         index: {
             update: () => {},
             remove: () => {},
+            applyMetadata: () => {},
         },
         storage: { saveFull: async () => {} },
         getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
