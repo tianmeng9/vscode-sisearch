@@ -26,6 +26,7 @@ export async function executeSearch(
         const results: SearchResult[] = [];
         let stderr = '';
         let aborted = false;
+        let rlClosed = false;
 
         // P7.4: readline 逐行消费 stdout,避免将全量输出累积到字符串后再 split
         const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
@@ -33,6 +34,9 @@ export async function executeSearch(
             const parsed = parseRgLine(line, workspaceRoot);
             if (parsed) { results.push(parsed); }
         });
+        // stdout EOF 时 readline 自动 emit 'close'。记录此事实,proc.close 分支据此决定
+        // 是同步 resolve 还是注册 once('close') 等待。
+        rl.once('close', () => { rlClosed = true; });
 
         proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
@@ -61,9 +65,15 @@ export async function executeSearch(
                 reject(new Error(`ripgrep failed (code ${code}): ${stderr}`));
                 return;
             }
-            // 等待 readline 把 buffer 里最后一行也 emit 完,再 resolve
-            rl.once('close', () => resolve(results));
-            rl.close();
+            // stdout EOF 会让 readline 自动 close 并 flush 完所有 'line' 事件。
+            // 若 proc.close 到达时 rl 已经关了 → 行已全部 emit,立即 resolve。
+            // 否则(proc 先退出、stdout 尚未 EOF 排完)挂 once('close') 等 flush。
+            if (rlClosed) {
+                resolve(results);
+            } else {
+                rl.once('close', () => resolve(results));
+                rl.close();
+            }
         });
 
         proc.on('error', (err) => {
