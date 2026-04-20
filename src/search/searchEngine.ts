@@ -10,14 +10,22 @@ export async function executeSearch(
     workspaceRoot: string,
     options: SearchOptions,
     includeExtensions: string[],
-    excludePatterns: string[]
+    excludePatterns: string[],
+    signal?: AbortSignal,
 ): Promise<SearchResult[]> {
     return new Promise((resolve, reject) => {
+        // 外部在 spawn 前已 abort:不起 rg,立即 reject
+        if (signal?.aborted) {
+            reject(new DOMException('executeSearch aborted', 'AbortError'));
+            return;
+        }
+
         const args = buildRgArgs(query, options, includeExtensions, excludePatterns);
         const proc = spawn(rgPath, args, { cwd: workspaceRoot });
 
         const results: SearchResult[] = [];
         let stderr = '';
+        let aborted = false;
 
         // P7.4: readline 逐行消费 stdout,避免将全量输出累积到字符串后再 split
         const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
@@ -28,7 +36,26 @@ export async function executeSearch(
 
         proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
+        // S6: 取消支持 — abort 时 kill 子进程 + 关 readline + 标记 aborted 让 close 分支走 reject
+        const onAbort = () => {
+            if (aborted) { return; }
+            aborted = true;
+            try { proc.kill('SIGTERM'); } catch { /* process may already be dead */ }
+            rl.close();
+        };
+        if (signal) {
+            signal.addEventListener('abort', onAbort, { once: true });
+        }
+        const cleanup = () => {
+            if (signal) { signal.removeEventListener('abort', onAbort); }
+        };
+
         proc.on('close', (code) => {
+            cleanup();
+            if (aborted) {
+                reject(new DOMException('executeSearch aborted', 'AbortError'));
+                return;
+            }
             // ripgrep exits with 1 when no matches — not an error
             if (code !== null && code > 1) {
                 reject(new Error(`ripgrep failed (code ${code}): ${stderr}`));
@@ -40,6 +67,8 @@ export async function executeSearch(
         });
 
         proc.on('error', (err) => {
+            cleanup();
+            rl.close();
             reject(new Error(`Failed to spawn ripgrep: ${err.message}`));
         });
     });
@@ -57,6 +86,9 @@ function buildRgArgs(
         '--no-heading',
         '--color', 'never',
         '--with-filename',
+        // P7.4 后续:防御超长单行(minified/build artifact)撑爆 readline 行缓冲。
+        // 命中 4096 字节以上的行,rg 输出 `[Omitted long line with N matches]`,parseRgLine 返回 null。
+        '--max-columns', '4096',
     ];
 
     if (!options.caseSensitive) {
@@ -124,11 +156,12 @@ export async function executeSearchWithIndex(
     includeExtensions: string[],
     excludePatterns: string[],
     index: SymbolIndex | null,
+    signal?: AbortSignal,
 ): Promise<SearchResult[]> {
     if (index && (index.status === 'ready' || index.status === 'stale')) {
         const results = index.searchSymbols(query, workspaceRoot, options);
         if (results.length > 0) { return results; }
     }
     // Fallback to ripgrep
-    return executeSearch(query, workspaceRoot, options, includeExtensions, excludePatterns);
+    return executeSearch(query, workspaceRoot, options, includeExtensions, excludePatterns, signal);
 }

@@ -90,9 +90,9 @@ export function bindWorkspace(
     context.subscriptions.push(symbolIndex.onStatsChanged(() => refreshStatus()));
     context.subscriptions.push({ dispose: () => symbolIndex.dispose() });
 
-    symbolIndex.loadFromDisk(workspaceRoot).then(loaded => {
-        if (loaded) { refreshStatus(); }
-    });
+    // P7.3: loadFromDisk 成功时内部 emit onStatusChanged+onStatsChanged,
+    // 两个事件订阅都会触发 refreshStatus,这里无需额外 .then 回调。
+    void symbolIndex.loadFromDisk(workspaceRoot);
 
     const config = vscode.workspace.getConfiguration('siSearch');
     const extensions = config.get<string[]>(

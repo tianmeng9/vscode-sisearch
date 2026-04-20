@@ -39,6 +39,8 @@ export class SymbolIndex {
     private workerPool: WorkerPool | undefined;
     // StorageManager 按 workspaceRoot 记忆化 —— 避免每次 sync/save/load 重新 new
     private readonly storageByRoot = new Map<string, StorageManager>();
+    // S8: canonicalizeRoot 结果缓存 —— 避免每次 getStorage/clearDisk 都走 realpathSync syscall
+    private readonly canonicalByInput = new Map<string, string>();
     // P7.3: 状态机事件化，替代 composition 层 2s 轮询
     private readonly _onStatusChanged = new vscode.EventEmitter<IndexStatus>();
     private readonly _onStatsChanged = new vscode.EventEmitter<{ files: number; symbols: number }>();
@@ -226,22 +228,32 @@ export class SymbolIndex {
         } catch {
             // ignore
         }
-        // 失效缓存,避免过时 StorageManager 指向已删目录
+        // 失效缓存,避免过时 StorageManager/canonical 指向已删目录
         this.storageByRoot.delete(canonical);
+        // S8: 清掉所有映射到该 canonical 的输入缓存项
+        for (const [input, canon] of this.canonicalByInput) {
+            if (canon === canonical) { this.canonicalByInput.delete(input); }
+        }
     }
 
     // ── Private helpers ─────────────────────────────────────────────────
 
     /** P7.5: 标准化 workspaceRoot —— 先 path.resolve 去 trailing slash / 相对段,
      *  再 fs.realpathSync 展开 symlink,使 `/proj` 与 `/var/real/proj`(若前者是 symlink)
-     *  归一到同一 canonical key。realpathSync 失败(目录不存在等)时静默回退到 resolve 结果。 */
+     *  归一到同一 canonical key。realpathSync 失败(目录不存在等)时静默回退到 resolve 结果。
+     *  S8: 结果按 resolved 输入缓存,避免同一 root 每次触达都走 syscall。 */
     private canonicalizeRoot(workspaceRoot: string): string {
         const resolved = path.resolve(workspaceRoot);
+        const cached = this.canonicalByInput.get(resolved);
+        if (cached !== undefined) { return cached; }
+        let canonical: string;
         try {
-            return fs.realpathSync(resolved);
+            canonical = fs.realpathSync(resolved);
         } catch {
-            return resolved;
+            canonical = resolved;
         }
+        this.canonicalByInput.set(resolved, canonical);
+        return canonical;
     }
 
     /** 按 workspaceRoot 记忆化 StorageManager,避免每次 sync/save/load 都重复 new。
