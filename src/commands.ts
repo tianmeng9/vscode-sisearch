@@ -75,11 +75,25 @@ export function registerCommands(
             highlightsTreeProvider.update([]);
         }),
 
-        vscode.commands.registerCommand('siSearch.jumpToResult', () => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor) { return; }
-            const filePath = editor.document.uri.fsPath;
-            const lineNumber = editor.selection.active.line + 1;
+        vscode.commands.registerCommand('siSearch.jumpToResult', (arg?: { filePath: string; lineNumber: number }) => {
+            // 两条调用路径:
+            //  1) CodeLens "Jump to Search Result" 点击 —— VS Code 把 CodeLens 的
+            //     arguments 透传进来,filePath+lineNumber 直接指向 lens 所属行,
+            //     与光标当前所在行无关(避免光标离开 lens 那行时静默失败)。
+            //  2) Alt+J 快捷键 / 命令面板 —— 无参,回退到以光标所在行为准。
+            let filePath: string | undefined;
+            let lineNumber: number | undefined;
+
+            if (arg && typeof arg.filePath === 'string' && typeof arg.lineNumber === 'number') {
+                filePath = arg.filePath;
+                lineNumber = arg.lineNumber;
+            } else {
+                const editor = vscode.window.activeTextEditor;
+                if (!editor) { return; }
+                filePath = editor.document.uri.fsPath;
+                lineNumber = editor.selection.active.line + 1;
+            }
+
             const results = store.getActiveResults();
             const idx = results.findIndex(
                 r => r.filePath === filePath && r.lineNumber === lineNumber
@@ -88,6 +102,12 @@ export function registerCommands(
                 store.setNavigationIndex(idx);
                 resultsPanel.highlightEntry(idx);
                 resultsPanel.show();
+            } else {
+                // 调试友好:明确告知 —— 否则用户会以为是"没反应"
+                vscode.window.setStatusBarMessage(
+                    `SI Search: no result at ${filePath ? filePath.split('/').pop() : '?'}:${lineNumber}`,
+                    3000,
+                );
             }
         }),
 

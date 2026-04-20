@@ -28,6 +28,9 @@ export class SearchResultCodeLensProvider implements vscode.CodeLensProvider {
             const lens = new vscode.CodeLens(range, {
                 title: '$(arrow-left) Jump to Search Result',
                 command: 'siSearch.jumpToResult',
+                // 把 lens 所属的 file+line 直接传给命令 —— 不依赖光标位置,
+                // 否则光标不在 lens 同行时 findIndex 返回 -1 就会静默失败。
+                arguments: [{ filePath, lineNumber: result.lineNumber }],
                 tooltip: 'Jump back to search results panel',
             });
             lenses.push(lens);
