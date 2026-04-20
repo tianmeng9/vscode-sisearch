@@ -144,3 +144,49 @@ suite('SymbolIndex events (P7.3)', () => {
         }
     });
 });
+
+suite('SymbolIndex storage canonicalization (P7.5)', () => {
+    test('symlink path and real path share one StorageManager instance', async () => {
+        const realRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sisearch-p75-real-'));
+        const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'sisearch-p75-link-'));
+        const linkRoot = path.join(parent, 'linked');
+        try {
+            try {
+                fs.symlinkSync(realRoot, linkRoot, 'dir');
+            } catch (e) {
+                // 某些 CI/沙箱禁用 symlink;跳过本测试而非 fail
+                console.warn('skip: cannot create symlink:', (e as Error).message);
+                return;
+            }
+
+            const index = new SymbolIndex();
+            const getCount = (index as unknown as { _getStorageCountForTest(): number })._getStorageCountForTest.bind(index);
+
+            await index.loadFromDisk(realRoot);
+            await index.loadFromDisk(linkRoot);
+
+            assert.strictEqual(
+                getCount(),
+                1,
+                'symlink and real path should canonicalize to the same StorageManager',
+            );
+
+            index.clearDisk(linkRoot);
+            assert.strictEqual(getCount(), 0, 'clearDisk via symlink should invalidate canonical key');
+        } finally {
+            try { fs.unlinkSync(linkRoot); } catch { /* noop */ }
+            fs.rmSync(realRoot, { recursive: true, force: true });
+            fs.rmSync(parent, { recursive: true, force: true });
+        }
+    });
+
+    test('canonicalize falls back to resolve for non-existent root (no throw)', () => {
+        const index = new SymbolIndex();
+        const getCount = (index as unknown as { _getStorageCountForTest(): number })._getStorageCountForTest.bind(index);
+        // 一个肯定不存在的路径,realpathSync 会抛 ENOENT,canonicalizeRoot 必须静默回退到 path.resolve
+        const bogus = path.join(os.tmpdir(), 'sisearch-p75-nonexistent-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+        assert.doesNotThrow(() => index.clearDisk(bogus));
+        // clearDisk 走 canonicalize,不抛且不留缓存
+        assert.strictEqual(getCount(), 0);
+    });
+});

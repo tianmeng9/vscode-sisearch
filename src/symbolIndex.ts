@@ -219,27 +219,39 @@ export class SymbolIndex {
     }
 
     clearDisk(workspaceRoot: string): void {
-        const normalized = path.resolve(workspaceRoot);
-        const indexDir = path.join(normalized, '.sisearch');
+        const canonical = this.canonicalizeRoot(workspaceRoot);
+        const indexDir = path.join(canonical, '.sisearch');
         try {
             fs.rmSync(indexDir, { recursive: true, force: true });
         } catch {
             // ignore
         }
         // 失效缓存,避免过时 StorageManager 指向已删目录
-        this.storageByRoot.delete(normalized);
+        this.storageByRoot.delete(canonical);
     }
 
     // ── Private helpers ─────────────────────────────────────────────────
 
+    /** P7.5: 标准化 workspaceRoot —— 先 path.resolve 去 trailing slash / 相对段,
+     *  再 fs.realpathSync 展开 symlink,使 `/proj` 与 `/var/real/proj`(若前者是 symlink)
+     *  归一到同一 canonical key。realpathSync 失败(目录不存在等)时静默回退到 resolve 结果。 */
+    private canonicalizeRoot(workspaceRoot: string): string {
+        const resolved = path.resolve(workspaceRoot);
+        try {
+            return fs.realpathSync(resolved);
+        } catch {
+            return resolved;
+        }
+    }
+
     /** 按 workspaceRoot 记忆化 StorageManager,避免每次 sync/save/load 都重复 new。
-     *  路径标准化:`/a/b` 与 `/a/b/` 归一到同一 key,防止重复实例化。 */
+     *  路径标准化:`/a/b`、`/a/b/`、以及 symlink 不同入口都归一到同一 key,防止重复实例化。 */
     private getStorage(workspaceRoot: string): StorageManager {
-        const normalized = path.resolve(workspaceRoot);
-        let storage = this.storageByRoot.get(normalized);
+        const canonical = this.canonicalizeRoot(workspaceRoot);
+        let storage = this.storageByRoot.get(canonical);
         if (!storage) {
-            storage = new StorageManager({ workspaceRoot: normalized, shardCount: this.shardCount });
-            this.storageByRoot.set(normalized, storage);
+            storage = new StorageManager({ workspaceRoot: canonical, shardCount: this.shardCount });
+            this.storageByRoot.set(canonical, storage);
         }
         return storage;
     }
