@@ -59,4 +59,25 @@ suite('SymbolIndex (façade)', () => {
             fs.rmSync(workspaceRoot, { recursive: true });
         }
     });
+
+    test('storageByRoot normalizes path variants (trailing slash) to one entry (P6.6 regression)', async () => {
+        const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sisearch-facade-norm-'));
+        try {
+            const index = new SymbolIndex();
+            const getCount = (index as unknown as { _getStorageCountForTest(): number })._getStorageCountForTest.bind(index);
+
+            // 两个调用使用同一目录的不同表示:trailing slash vs 无
+            await index.loadFromDisk(workspaceRoot);
+            await index.loadFromDisk(workspaceRoot + path.sep);
+
+            // 标准化后应当只有 1 个 StorageManager 实例
+            assert.strictEqual(getCount(), 1, 'path variants should share one StorageManager instance');
+
+            // clearDisk 用 trailing slash 版本也要能 invalidate 同一 key
+            index.clearDisk(workspaceRoot + path.sep);
+            assert.strictEqual(getCount(), 0, 'clearDisk should invalidate normalized key regardless of trailing slash');
+        } finally {
+            fs.rmSync(workspaceRoot, { recursive: true, force: true });
+        }
+    });
 });

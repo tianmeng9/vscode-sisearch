@@ -49,6 +49,9 @@ export class SymbolIndex {
     /** @internal 测试钩子——不得用于生产代码路径。 */
     _setStatusForTest(next: IndexStatus): void { this._status = next; }
 
+    /** @internal 测试钩子:暴露 storageByRoot 大小,用于验证路径标准化。 */
+    _getStorageCountForTest(): number { return this.storageByRoot.size; }
+
     getStats(): { files: number; symbols: number } {
         return this.inner.getStats();
     }
@@ -186,24 +189,27 @@ export class SymbolIndex {
     }
 
     clearDisk(workspaceRoot: string): void {
-        const indexDir = path.join(workspaceRoot, '.sisearch');
+        const normalized = path.resolve(workspaceRoot);
+        const indexDir = path.join(normalized, '.sisearch');
         try {
             fs.rmSync(indexDir, { recursive: true, force: true });
         } catch {
             // ignore
         }
         // 失效缓存,避免过时 StorageManager 指向已删目录
-        this.storageByRoot.delete(workspaceRoot);
+        this.storageByRoot.delete(normalized);
     }
 
     // ── Private helpers ─────────────────────────────────────────────────
 
-    /** 按 workspaceRoot 记忆化 StorageManager,避免每次 sync/save/load 都重复 new。 */
+    /** 按 workspaceRoot 记忆化 StorageManager,避免每次 sync/save/load 都重复 new。
+     *  路径标准化:`/a/b` 与 `/a/b/` 归一到同一 key,防止重复实例化。 */
     private getStorage(workspaceRoot: string): StorageManager {
-        let storage = this.storageByRoot.get(workspaceRoot);
+        const normalized = path.resolve(workspaceRoot);
+        let storage = this.storageByRoot.get(normalized);
         if (!storage) {
-            storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
-            this.storageByRoot.set(workspaceRoot, storage);
+            storage = new StorageManager({ workspaceRoot: normalized, shardCount: this.shardCount });
+            this.storageByRoot.set(normalized, storage);
         }
         return storage;
     }
