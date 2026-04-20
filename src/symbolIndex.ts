@@ -94,11 +94,7 @@ export class SymbolIndex {
                     this.inner.remove(file);
                     this.fileMetadata.delete(file);
                 },
-                applyMetadata: (metadata) => {
-                    for (const meta of metadata) {
-                        this.fileMetadata.set(meta.relativePath, meta);
-                    }
-                },
+                applyMetadata: (metadata) => this.applyMetadataToCache(metadata),
                 fileMetadata: this.fileMetadata,
             },
             storage: {
@@ -227,14 +223,20 @@ export class SymbolIndex {
     }
 
     /** syncDirty 路径:把 parse 结果回灌 inner + fileMetadata。
-     *  与 SyncOrchestrator.synchronize 共享 groupParseResult 语义。 */
+     *  与 SyncOrchestrator.synchronize 共享 groupParseResult + applyMetadataToCache 语义。 */
     private applyParseResult(result: ParseBatchResult): void {
         const grouped = groupParseResult(result);
-        for (const meta of result.metadata) {
-            this.fileMetadata.set(meta.relativePath, meta);
-        }
+        this.applyMetadataToCache(result.metadata);
         for (const [file, symbols] of grouped) {
             this.inner.update(file, symbols);
+        }
+    }
+
+    /** 共享:将 per-file 元数据写入 fileMetadata 缓存。
+     *  收口 orchestrator applyMetadata closure 与 applyParseResult 两处调用。 */
+    private applyMetadataToCache(metadata: IndexedFile[]): void {
+        for (const meta of metadata) {
+            this.fileMetadata.set(meta.relativePath, meta);
         }
     }
 
