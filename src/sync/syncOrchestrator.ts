@@ -18,6 +18,8 @@ export interface SyncDeps {
     index: {
         update(file: string, symbols: SymbolEntry[]): void;
         remove(file: string): void;
+        /** 由 worker parse 产出的 per-file 元数据;在 update() 之前调用,避免闭包 kludge */
+        applyMetadata?(metadata: IndexedFile[]): void;
         fileMetadata?: Map<string, IndexedFile>;
     };
     storage: {
@@ -96,6 +98,9 @@ export class SyncOrchestrator {
                     grouped.set(meta.relativePath, []);
                 }
             }
+
+            // 先回写 per-file 元数据,随后才 index.update —— 保证 update 时元数据已就绪
+            this.deps.index.applyMetadata?.(parsed.metadata);
 
             for (const [file, symbols] of grouped) {
                 this.deps.index.update(file, symbols);

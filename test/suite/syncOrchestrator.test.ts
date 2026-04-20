@@ -99,6 +99,38 @@ suite('syncOrchestrator', () => {
         assert.strictEqual(saveFullCalled, true);
     });
 
+    test('invokes index.applyMetadata with parse result before index.update', async () => {
+        const order: string[] = [];
+        const appliedMeta: IndexedFile[] = [];
+
+        const orchestrator = new SyncOrchestrator({
+            scanFiles: async () => [{ relativePath: 'x.c', absPath: '/ws/x.c', mtime: 2, size: 3 }],
+            classify: async () => ({
+                toProcess: [{ relativePath: 'x.c', absPath: '/ws/x.c', mtime: 2, size: 3 }],
+                toDelete: [],
+            }),
+            workerPool: {
+                parse: async () => ({
+                    symbols: [],
+                    metadata: [{ relativePath: 'x.c', mtime: 2, size: 3, symbolCount: 0 }],
+                    errors: [],
+                }),
+            },
+            index: {
+                update: () => { order.push('update'); },
+                remove: () => {},
+                applyMetadata: (meta) => { order.push('applyMetadata'); appliedMeta.push(...meta); },
+            },
+            storage: { saveFull: async () => {} },
+            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+        });
+
+        await orchestrator.synchronize({ workspaceRoot: '/ws' });
+        assert.deepStrictEqual(order, ['applyMetadata', 'update'], 'applyMetadata must fire before update');
+        assert.strictEqual(appliedMeta.length, 1);
+        assert.strictEqual(appliedMeta[0].relativePath, 'x.c');
+    });
+
     test('does not call storage when nothing changed', async () => {
         let anySaveCalled = false;
 

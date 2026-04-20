@@ -15,9 +15,9 @@ import {
 } from './types';
 import { InMemorySymbolIndex } from './index/symbolIndex';
 import { StorageManager } from './storage/storageManager';
-import type { ClassifyResult, FileCandidate } from './sync/batchClassifier';
+import type { FileCandidate } from './sync/batchClassifier';
 import { classifyBatches } from './sync/batchClassifier';
-import type { WorkerPool } from './sync/workerPool';
+import type { WorkerPool, ParseBatchResult } from './sync/workerPool';
 import { SyncOrchestrator } from './sync/syncOrchestrator';
 
 const DEFAULT_SHARD_COUNT = 16;
@@ -36,6 +36,8 @@ export class SymbolIndex {
     private _status: IndexStatus = 'none';
     private readonly shardCount: number;
     private workerPool: WorkerPool | undefined;
+    // StorageManager 按 workspaceRoot 记忆化 —— 避免每次 sync/save/load 重新 new
+    private readonly storageByRoot = new Map<string, StorageManager>();
 
     constructor(deps: SymbolIndexDeps = {}) {
         this.workerPool = deps.workerPool;
@@ -77,47 +79,21 @@ export class SymbolIndex {
     ): Promise<void> {
         this._status = 'building';
 
-        const storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
-        const workerPool = this.workerPool;
-
-        // Wrap the parse call to capture per-file metadata by relativePath. The orchestrator only
-        // forwards symbols + metadata arrays; we use this map so index.update() can pick up the
-        // matching IndexedFile at the moment it applies symbols.
-        const pendingMetadata = new Map<string, IndexedFile>();
-        const wrappedParse = async (files: Array<{ absPath: string; relativePath: string }>) => {
-            const result = workerPool
-                ? await workerPool.parse(files)
-                : await this.parseInProcess(files, workspaceRoot);
-            for (const m of result.metadata) {
-                pendingMetadata.set(m.relativePath, m);
-            }
-            return result;
-        };
-
+        const storage = this.getStorage(workspaceRoot);
         const orchestrator = new SyncOrchestrator({
             scanFiles: async (root) => this.scanWorkspace(root, extensions, excludePatterns, includePaths, token),
             classify: async (input) => classifyBatches(input),
-            workerPool: { parse: wrappedParse },
+            workerPool: { parse: (files) => this.runParse(files, workspaceRoot) },
             index: {
-                update: (file, symbols) => {
-                    this.inner.update(file, symbols);
-                    const meta = pendingMetadata.get(file);
-                    if (meta) {
-                        this.fileMetadata.set(file, meta);
-                        pendingMetadata.delete(file);
-                    } else {
-                        const existing = this.fileMetadata.get(file);
-                        this.fileMetadata.set(file, existing ?? {
-                            relativePath: file,
-                            mtime: 0,
-                            size: 0,
-                            symbolCount: symbols.length,
-                        });
-                    }
-                },
+                update: (file, symbols) => this.inner.update(file, symbols),
                 remove: file => {
                     this.inner.remove(file);
                     this.fileMetadata.delete(file);
+                },
+                applyMetadata: (metadata) => {
+                    for (const meta of metadata) {
+                        this.fileMetadata.set(meta.relativePath, meta);
+                    }
                 },
                 fileMetadata: this.fileMetadata,
             },
@@ -151,8 +127,7 @@ export class SymbolIndex {
     async syncDirty(workspaceRoot: string): Promise<void> {
         if (this.dirtyFiles.size === 0 && this.deletedFiles.size === 0) { return; }
 
-        const storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
-        const workerPool = this.workerPool;
+        const storage = this.getStorage(workspaceRoot);
         const dirtyPaths = new Set<string>([...this.dirtyFiles, ...this.deletedFiles]);
 
         for (const rel of this.deletedFiles) {
@@ -167,23 +142,8 @@ export class SymbolIndex {
                 relativePath: rel,
             }));
 
-            const result = workerPool
-                ? await workerPool.parse(files)
-                : await this.parseInProcess(files, workspaceRoot);
-
-            // Group symbols by file
-            const grouped = new Map<string, SymbolEntry[]>();
-            for (const sym of result.symbols) {
-                const bucket = grouped.get(sym.relativePath);
-                if (bucket) { bucket.push(sym); } else { grouped.set(sym.relativePath, [sym]); }
-            }
-            for (const meta of result.metadata) {
-                if (!grouped.has(meta.relativePath)) { grouped.set(meta.relativePath, []); }
-                this.fileMetadata.set(meta.relativePath, meta);
-            }
-            for (const [file, symbols] of grouped) {
-                this.inner.update(file, symbols);
-            }
+            const result = await this.runParse(files, workspaceRoot);
+            this.applyParseResult(result);
         }
         this.dirtyFiles.clear();
 
@@ -201,16 +161,14 @@ export class SymbolIndex {
     }
 
     async saveToDisk(workspaceRoot: string): Promise<void> {
-        const storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
-        await storage.saveFull({
+        await this.getStorage(workspaceRoot).saveFull({
             symbolsByFile: this.inner.snapshot(),
             fileMetadata: new Map(this.fileMetadata),
         });
     }
 
     async loadFromDisk(workspaceRoot: string): Promise<boolean> {
-        const storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
-        const snap = await storage.load();
+        const snap = await this.getStorage(workspaceRoot).load();
         if (snap.symbolsByFile.size === 0 && snap.fileMetadata.size === 0) { return false; }
         this.inner.replaceAll(snap.symbolsByFile);
         this.fileMetadata.clear();
@@ -234,9 +192,49 @@ export class SymbolIndex {
         } catch {
             // ignore
         }
+        // 失效缓存,避免过时 StorageManager 指向已删目录
+        this.storageByRoot.delete(workspaceRoot);
     }
 
     // ── Private helpers ─────────────────────────────────────────────────
+
+    /** 按 workspaceRoot 记忆化 StorageManager,避免每次 sync/save/load 都重复 new。 */
+    private getStorage(workspaceRoot: string): StorageManager {
+        let storage = this.storageByRoot.get(workspaceRoot);
+        if (!storage) {
+            storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
+            this.storageByRoot.set(workspaceRoot, storage);
+        }
+        return storage;
+    }
+
+    /** 统一 parse 入口:有 WorkerPool 走它,否则主线程回退。 */
+    private async runParse(
+        files: Array<{ absPath: string; relativePath: string }>,
+        workspaceRoot: string,
+    ): Promise<ParseBatchResult> {
+        if (this.workerPool) {
+            return this.workerPool.parse(files);
+        }
+        return this.parseInProcess(files, workspaceRoot);
+    }
+
+    /** syncDirty 路径:把 parse 结果回灌 inner + fileMetadata。 */
+    private applyParseResult(result: ParseBatchResult): void {
+        // Group symbols by file
+        const grouped = new Map<string, SymbolEntry[]>();
+        for (const sym of result.symbols) {
+            const bucket = grouped.get(sym.relativePath);
+            if (bucket) { bucket.push(sym); } else { grouped.set(sym.relativePath, [sym]); }
+        }
+        for (const meta of result.metadata) {
+            if (!grouped.has(meta.relativePath)) { grouped.set(meta.relativePath, []); }
+            this.fileMetadata.set(meta.relativePath, meta);
+        }
+        for (const [file, symbols] of grouped) {
+            this.inner.update(file, symbols);
+        }
+    }
 
     private async scanWorkspace(
         workspaceRoot: string,
@@ -276,7 +274,7 @@ export class SymbolIndex {
     private async parseInProcess(
         files: Array<{ absPath: string; relativePath: string }>,
         workspaceRoot: string,
-    ): Promise<{ symbols: SymbolEntry[]; metadata: IndexedFile[]; errors: string[] }> {
+    ): Promise<ParseBatchResult> {
         const { parseSymbols } = await import('./symbolParser');
         const symbols: SymbolEntry[] = [];
         const metadata: IndexedFile[] = [];
@@ -295,7 +293,6 @@ export class SymbolIndex {
                 errors.push(`${f.relativePath}: ${(e as Error).message}`);
             }
         }
-        // Silence unused parameter — workspaceRoot not needed after refactor
         void workspaceRoot;
         return { symbols, metadata, errors };
     }
