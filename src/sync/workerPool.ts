@@ -8,8 +8,10 @@
 
 import type { IndexedFile, SymbolEntry } from '../index/indexTypes';
 
-/** 每个批次的文件数。太小 → IPC 开销; 太大 → 进度粒度粗。128 是折中值。 */
-const BATCH_SIZE = 128;
+/** 每个批次的文件数。太小 → IPC 开销; 太大 → 进度粒度粗 + native 分配爆发。
+ *  取证：33k 文件 sync 中 VS Code 闪退,怀疑是 symbolParser 里 per-file `new ParserClass()`
+ *  在一次 parseBatch 内爆发式创建销毁导致 WASM native 堆波动。先降到 32 试试。 */
+const BATCH_SIZE = 32;
 
 export interface ParseBatchResult {
     symbols: SymbolEntry[];

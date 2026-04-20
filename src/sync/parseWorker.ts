@@ -16,6 +16,14 @@ interface ParseBatchRequest {
 async function main(): Promise<void> {
     const parser = await createReusableParser(workerData.extensionPath as string);
 
+    // Worker 主线程退出前释放 parser 持有的 WASM native 句柄。
+    // 在 Node 事件循环退出前触发,避免 native 资源由 GC 兜底。
+    const cleanup = (): void => {
+        try { parser.dispose(); } catch { /* ignore */ }
+    };
+    process.on('exit', cleanup);
+    process.on('beforeExit', cleanup);
+
     parentPort?.on('message', async (message: ParseBatchRequest) => {
         if (message.type !== 'parseBatch') {
             return;
