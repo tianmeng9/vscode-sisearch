@@ -1,4 +1,6 @@
 // src/extension.ts
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { SearchStore } from './search/searchStore';
 import { SidebarProvider } from './ui/sidebarProvider';
@@ -14,6 +16,9 @@ import { FileWatcher } from './fileWatcher';
 import { initParser, disposeParser } from './symbolParser';
 import { registerCommands } from './commands';
 import { wireMessageRouter } from './messageRouter';
+import { WorkerPool } from './sync/workerPool';
+import { createWorkerThreadFactory } from './sync/workerPoolFactory';
+import { AutoSyncController } from './sync/autoSync';
 
 export function activate(context: vscode.ExtensionContext) {
     // ── 依赖实例化 ────────────────────────────────────────────────
@@ -24,6 +29,15 @@ export function activate(context: vscode.ExtensionContext) {
     const codeLensProvider = new SearchResultCodeLensProvider(store);
     const highlightsTreeProvider = new HighlightsTreeProvider();
     const symbolIndex = new SymbolIndex();
+
+    // ── Worker 池（真正的线程级并行） ─────────────────────────────
+    const poolSize = Math.max(2, Math.min(8, os.cpus().length - 1));
+    const workerPool = new WorkerPool({
+        size: poolSize,
+        workerFactory: createWorkerThreadFactory(context.extensionPath),
+    });
+    symbolIndex.setWorkerPool(workerPool);
+    context.subscriptions.push({ dispose: () => { void workerPool.dispose(); } });
 
     // ── 状态栏 ────────────────────────────────────────────────────
     const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
@@ -41,8 +55,38 @@ export function activate(context: vscode.ExtensionContext) {
 
         const config = vscode.workspace.getConfiguration('siSearch');
         const extensions = config.get<string[]>('includeFileExtensions', ['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl']);
-        const fileWatcher = new FileWatcher(symbolIndex, workspaceRoot, extensions);
+        const autoSyncEnabled = config.get<boolean>('autoSync', true);
+        const autoSyncDelayMs = config.get<number>('autoSyncDelay', 5000);
+        const autoSyncOnSave = config.get<boolean>('autoSyncOnSave', false);
+
+        const autoSync = new AutoSyncController({
+            enabled: autoSyncEnabled,
+            delayMs: autoSyncDelayMs,
+            syncDirty: async () => {
+                try {
+                    await symbolIndex.syncDirty(workspaceRoot);
+                    updateStatusBar(statusBarItem, symbolIndex);
+                } catch {
+                    // Silent — next sync attempt will retry
+                }
+            },
+        });
+        context.subscriptions.push({ dispose: () => autoSync.dispose() });
+
+        const fileWatcher = new FileWatcher(symbolIndex, workspaceRoot, extensions, autoSync);
         context.subscriptions.push(fileWatcher);
+
+        // 按文件扩展名白名单判断 save 是否应触发 dirty flush。
+        if (autoSyncOnSave) {
+            const extSet = new Set(extensions.map(e => e.toLowerCase()));
+            context.subscriptions.push(
+                vscode.workspace.onDidSaveTextDocument(doc => {
+                    const ext = path.extname(doc.uri.fsPath).toLowerCase();
+                    if (!extSet.has(ext)) { return; }
+                    void autoSync.flush();
+                }),
+            );
+        }
 
         const statusTimer = setInterval(() => { updateStatusBar(statusBarItem, symbolIndex); }, 2000);
         context.subscriptions.push({ dispose: () => clearInterval(statusTimer) });
@@ -74,8 +118,6 @@ export function activate(context: vscode.ExtensionContext) {
             updateStatusBar, updateSidebarHistory,
         })
     );
-
-    console.log('SI Search is now active');
 }
 
 function updateSidebarHistory(store: SearchStore, sidebar: SidebarProvider): void {

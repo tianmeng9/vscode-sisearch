@@ -25,6 +25,18 @@ export interface SyncDeps {
             symbolsByFile: Map<string, SymbolEntry[]>;
             fileMetadata: Map<string, IndexedFile>;
         }): Promise<void>;
+        saveDirty?(
+            snapshot: {
+                symbolsByFile: Map<string, SymbolEntry[]>;
+                fileMetadata: Map<string, IndexedFile>;
+            },
+            dirtyPaths: Set<string>,
+        ): Promise<void>;
+    };
+    /** 读取最新索引快照，用于驱动 storage.saveFull/saveDirty。 */
+    getSnapshot: () => {
+        symbolsByFile: Map<string, SymbolEntry[]>;
+        fileMetadata: Map<string, IndexedFile>;
     };
     onProgress?: (phase: string, current: number, total: number, currentFile?: string) => void;
 }
@@ -49,9 +61,13 @@ export class SyncOrchestrator {
         const previousFiles = this.deps.index.fileMetadata ?? new Map<string, IndexedFile>();
         const classified = await this.deps.classify({ workspaceRoot, currentFiles, previousFiles });
 
+        // Track paths that changed this run — drives saveDirty
+        const dirtyPaths = new Set<string>();
+
         // Apply deletions
         for (const relativePath of classified.toDelete) {
             this.deps.index.remove(relativePath);
+            dirtyPaths.add(relativePath);
         }
 
         if (cancellationToken?.isCancellationRequested) { return; }
@@ -83,11 +99,23 @@ export class SyncOrchestrator {
 
             for (const [file, symbols] of grouped) {
                 this.deps.index.update(file, symbols);
+                dirtyPaths.add(file);
             }
         }
 
         if (cancellationToken?.isCancellationRequested) { return; }
 
-        this.deps.onProgress?.('saving', 0, 0);
+        // Persist to storage — incremental if possible
+        if (dirtyPaths.size > 0) {
+            this.deps.onProgress?.('saving', 0, dirtyPaths.size);
+            const snapshot = this.deps.getSnapshot();
+            if (this.deps.storage.saveDirty) {
+                await this.deps.storage.saveDirty(snapshot, dirtyPaths);
+            } else {
+                await this.deps.storage.saveFull(snapshot);
+            }
+        } else {
+            this.deps.onProgress?.('saving', 0, 0);
+        }
     }
 }

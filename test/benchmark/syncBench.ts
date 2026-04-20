@@ -37,6 +37,7 @@ async function main(): Promise<void> {
             remove: () => {},
         },
         storage: { saveFull: async () => {} },
+        getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
     });
 
     const start = performance.now();

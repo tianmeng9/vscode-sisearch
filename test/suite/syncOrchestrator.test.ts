@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import { SyncOrchestrator } from '../../src/sync/syncOrchestrator';
+import type { SymbolEntry, IndexedFile } from '../../src/index/indexTypes';
 
 suite('syncOrchestrator', () => {
     test('applies deletions and worker parse results to index', async () => {
@@ -24,6 +25,7 @@ suite('syncOrchestrator', () => {
                 remove(file: string) { removals.push(file); },
             },
             storage: { saveFull: async () => {} },
+            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
         });
 
         await orchestrator.synchronize({ workspaceRoot: '/workspace' });
@@ -40,9 +42,79 @@ suite('syncOrchestrator', () => {
             workerPool: { parse: async () => { parseCalled = true; return { symbols: [], metadata: [], errors: [] }; } },
             index: { update: () => {}, remove: () => {} },
             storage: { saveFull: async () => {} },
+            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
         });
 
         await orchestrator.synchronize({ workspaceRoot: '/workspace' });
         assert.strictEqual(parseCalled, false);
+    });
+
+    test('calls storage.saveDirty with dirtyPaths when available', async () => {
+        const saveDirtyCalls: Array<{ paths: string[] }> = [];
+        const saveFullCalls: number[] = [];
+
+        const snapshot = { symbolsByFile: new Map<string, SymbolEntry[]>(), fileMetadata: new Map<string, IndexedFile>() };
+
+        const orchestrator = new SyncOrchestrator({
+            scanFiles: async () => [{ relativePath: 'new.c', absPath: '/ws/new.c', mtime: 1, size: 1 }],
+            classify: async () => ({
+                toProcess: [{ relativePath: 'new.c', absPath: '/ws/new.c', mtime: 1, size: 1 }],
+                toDelete: ['gone.c'],
+            }),
+            workerPool: {
+                parse: async () => ({
+                    symbols: [],
+                    metadata: [{ relativePath: 'new.c', mtime: 1, size: 1, symbolCount: 0 }],
+                    errors: [],
+                }),
+            },
+            index: { update: () => {}, remove: () => {} },
+            storage: {
+                saveFull: async () => { saveFullCalls.push(1); },
+                saveDirty: async (_snap, paths) => { saveDirtyCalls.push({ paths: [...paths] }); },
+            },
+            getSnapshot: () => snapshot,
+        });
+
+        await orchestrator.synchronize({ workspaceRoot: '/ws' });
+        assert.strictEqual(saveDirtyCalls.length, 1, 'saveDirty should be called exactly once');
+        assert.strictEqual(saveFullCalls.length, 0, 'saveFull should not be called when saveDirty is available');
+        assert.ok(saveDirtyCalls[0].paths.includes('gone.c'), 'deleted path should be marked dirty');
+        assert.ok(saveDirtyCalls[0].paths.includes('new.c'), 'added path should be marked dirty');
+    });
+
+    test('falls back to saveFull when saveDirty not provided', async () => {
+        let saveFullCalled = false;
+
+        const orchestrator = new SyncOrchestrator({
+            scanFiles: async () => [],
+            classify: async () => ({ toProcess: [], toDelete: ['x.c'] }),
+            workerPool: { parse: async () => ({ symbols: [], metadata: [], errors: [] }) },
+            index: { update: () => {}, remove: () => {} },
+            storage: { saveFull: async () => { saveFullCalled = true; } },
+            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+        });
+
+        await orchestrator.synchronize({ workspaceRoot: '/ws' });
+        assert.strictEqual(saveFullCalled, true);
+    });
+
+    test('does not call storage when nothing changed', async () => {
+        let anySaveCalled = false;
+
+        const orchestrator = new SyncOrchestrator({
+            scanFiles: async () => [],
+            classify: async () => ({ toProcess: [], toDelete: [] }),
+            workerPool: { parse: async () => ({ symbols: [], metadata: [], errors: [] }) },
+            index: { update: () => {}, remove: () => {} },
+            storage: {
+                saveFull: async () => { anySaveCalled = true; },
+                saveDirty: async () => { anySaveCalled = true; },
+            },
+            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+        });
+
+        await orchestrator.synchronize({ workspaceRoot: '/ws' });
+        assert.strictEqual(anySaveCalled, false);
     });
 });

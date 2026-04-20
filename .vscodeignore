@@ -3,6 +3,7 @@
 .cursor/**
 .idea/**
 .github/**
+.git
 .git/**
 .gitignore
 .gitattributes

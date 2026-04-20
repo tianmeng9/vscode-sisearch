@@ -1,29 +1,54 @@
+// src/symbolIndex.ts
+// Façade：保留历史公开 API，但内部委托给 InMemorySymbolIndex + StorageManager + SyncOrchestrator。
+// 所有持久化走 MessagePack 分片（StorageManager），解析走 WorkerPool。
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { SymbolEntry, IndexedFile, SerializedIndex, IndexStatus, SearchResult, SearchOptions, SyncProgress } from './types';
-import { parseSymbols } from './symbolParser';
+import {
+    IndexedFile,
+    IndexStatus,
+    SearchOptions,
+    SearchResult,
+    SyncProgress,
+    SymbolEntry,
+} from './types';
+import { InMemorySymbolIndex } from './index/symbolIndex';
+import { StorageManager } from './storage/storageManager';
+import type { ClassifyResult, FileCandidate } from './sync/batchClassifier';
+import { classifyBatches } from './sync/batchClassifier';
+import type { WorkerPool } from './sync/workerPool';
+import { SyncOrchestrator } from './sync/syncOrchestrator';
 
-const INDEX_VERSION = 1;
-const INDEX_DIR = '.sisearch';
-const INDEX_FILE = 'index.json';
+const DEFAULT_SHARD_COUNT = 16;
+
+export interface SymbolIndexDeps {
+    /** 可选注入 WorkerPool；未提供时 façade 回退为同步解析（测试用）。 */
+    workerPool?: WorkerPool;
+    shardCount?: number;
+}
 
 export class SymbolIndex {
-    private symbolsByFile = new Map<string, SymbolEntry[]>();
-    private nameIndex = new Map<string, SymbolEntry[]>();
-    private fileMetadata = new Map<string, IndexedFile>();
-    private dirtyFiles = new Set<string>();
-    private deletedFiles = new Set<string>();
+    private readonly inner = new InMemorySymbolIndex();
+    private readonly fileMetadata = new Map<string, IndexedFile>();
+    private readonly dirtyFiles = new Set<string>();
+    private readonly deletedFiles = new Set<string>();
     private _status: IndexStatus = 'none';
+    private readonly shardCount: number;
+    private workerPool: WorkerPool | undefined;
+
+    constructor(deps: SymbolIndexDeps = {}) {
+        this.workerPool = deps.workerPool;
+        this.shardCount = deps.shardCount ?? DEFAULT_SHARD_COUNT;
+    }
 
     get status(): IndexStatus { return this._status; }
 
+    /** @internal 测试钩子——不得用于生产代码路径。 */
+    _setStatusForTest(next: IndexStatus): void { this._status = next; }
+
     getStats(): { files: number; symbols: number } {
-        let symbols = 0;
-        for (const entries of this.symbolsByFile.values()) {
-            symbols += entries.length;
-        }
-        return { files: this.symbolsByFile.size, symbols };
+        return this.inner.getStats();
     }
 
     markDirty(relativePath: string): void {
@@ -38,6 +63,10 @@ export class SymbolIndex {
         if (this._status === 'ready') { this._status = 'stale'; }
     }
 
+    setWorkerPool(workerPool: WorkerPool | undefined): void {
+        this.workerPool = workerPool;
+    }
+
     async synchronize(
         workspaceRoot: string,
         extensions: string[],
@@ -48,252 +77,150 @@ export class SymbolIndex {
     ): Promise<void> {
         this._status = 'building';
 
-        // Phase 1: Scan files
-        onProgress?.({ phase: 'scanning', current: 0, total: 0 });
+        const storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
+        const workerPool = this.workerPool;
 
-        const extGlob = `*{${extensions.join(',')}}`;
-        const excludeGlob = excludePatterns.length
-            ? `{${excludePatterns.join(',')}}`
-            : undefined;
-
-        // If includePaths specified, scan each path separately; otherwise scan entire workspace
-        const prefixes = includePaths && includePaths.length > 0 ? includePaths : ['**'];
-        const allUris: vscode.Uri[] = [];
-        for (const prefix of prefixes) {
-            if (token.isCancellationRequested) { break; }
-            const pattern = prefix === '**' ? `**/${extGlob}` : `${prefix}/**/${extGlob}`;
-            const uris = await vscode.workspace.findFiles(pattern, excludeGlob);
-            allUris.push(...uris);
-        }
-        const uris = allUris;
-        if (token.isCancellationRequested) { this._status = this.symbolsByFile.size > 0 ? 'stale' : 'none'; return; }
-
-        // Phase 2: Classify files as added/changed/unchanged/deleted
-        const currentFiles = new Map<string, vscode.Uri>();
-        for (const uri of uris) {
-            const rel = path.relative(workspaceRoot, uri.fsPath);
-            currentFiles.set(rel, uri);
-        }
-
-        const toProcess: Array<{ relativePath: string; uri: vscode.Uri }> = [];
-
-        for (const [rel, uri] of currentFiles) {
-            const existing = this.fileMetadata.get(rel);
-            if (!existing) {
-                toProcess.push({ relativePath: rel, uri });
-                continue;
+        // Wrap the parse call to capture per-file metadata by relativePath. The orchestrator only
+        // forwards symbols + metadata arrays; we use this map so index.update() can pick up the
+        // matching IndexedFile at the moment it applies symbols.
+        const pendingMetadata = new Map<string, IndexedFile>();
+        const wrappedParse = async (files: Array<{ absPath: string; relativePath: string }>) => {
+            const result = workerPool
+                ? await workerPool.parse(files)
+                : await this.parseInProcess(files, workspaceRoot);
+            for (const m of result.metadata) {
+                pendingMetadata.set(m.relativePath, m);
             }
-            try {
-                const stat = await vscode.workspace.fs.stat(uri);
-                if (stat.mtime !== existing.mtime || stat.size !== existing.size) {
-                    toProcess.push({ relativePath: rel, uri });
-                }
-            } catch {
-                toProcess.push({ relativePath: rel, uri });
-            }
-        }
+            return result;
+        };
 
-        // Remove files that no longer exist
-        for (const rel of this.fileMetadata.keys()) {
-            if (!currentFiles.has(rel)) {
-                this.removeFile(rel);
-            }
-        }
+        const orchestrator = new SyncOrchestrator({
+            scanFiles: async (root) => this.scanWorkspace(root, extensions, excludePatterns, includePaths, token),
+            classify: async (input) => classifyBatches(input),
+            workerPool: { parse: wrappedParse },
+            index: {
+                update: (file, symbols) => {
+                    this.inner.update(file, symbols);
+                    const meta = pendingMetadata.get(file);
+                    if (meta) {
+                        this.fileMetadata.set(file, meta);
+                        pendingMetadata.delete(file);
+                    } else {
+                        const existing = this.fileMetadata.get(file);
+                        this.fileMetadata.set(file, existing ?? {
+                            relativePath: file,
+                            mtime: 0,
+                            size: 0,
+                            symbolCount: symbols.length,
+                        });
+                    }
+                },
+                remove: file => {
+                    this.inner.remove(file);
+                    this.fileMetadata.delete(file);
+                },
+                fileMetadata: this.fileMetadata,
+            },
+            storage: {
+                saveFull: snapshot => storage.saveFull(snapshot),
+                saveDirty: (snapshot, dirty) => storage.saveDirty(snapshot, dirty),
+            },
+            getSnapshot: () => ({
+                symbolsByFile: this.inner.snapshot(),
+                fileMetadata: new Map(this.fileMetadata),
+            }),
+            onProgress: (phase, current, total, currentFile) => {
+                onProgress?.({ phase: phase as SyncProgress['phase'], current, total, currentFile });
+            },
+        });
 
-        // Phase 3: Parse changed files
-        const total = toProcess.length;
-        for (let i = 0; i < total; i++) {
-            if (token.isCancellationRequested) { this._status = 'stale'; return; }
-
-            const { relativePath, uri } = toProcess[i];
-            if (i % 50 === 0 || i === total - 1) {
-                onProgress?.({ phase: 'parsing', current: i + 1, total, currentFile: relativePath });
-            }
-
-            try {
-                const contentBytes = await vscode.workspace.fs.readFile(uri);
-                const content = Buffer.from(contentBytes).toString('utf-8');
-                const absPath = path.resolve(workspaceRoot, relativePath);
-                const symbols = parseSymbols(absPath, relativePath, content);
-
-                this.removeFile(relativePath);
-                this.symbolsByFile.set(relativePath, symbols);
-                for (const sym of symbols) {
-                    const key = sym.name.toLowerCase();
-                    const arr = this.nameIndex.get(key);
-                    if (arr) { arr.push(sym); } else { this.nameIndex.set(key, [sym]); }
-                }
-
-                const stat = await vscode.workspace.fs.stat(uri);
-                this.fileMetadata.set(relativePath, {
-                    relativePath,
-                    mtime: stat.mtime,
-                    size: stat.size,
-                    symbolCount: symbols.length,
-                });
-            } catch {
-                // Skip unreadable files
-            }
-        }
+        await orchestrator.synchronize({
+            workspaceRoot,
+            cancellationToken: { get isCancellationRequested() { return token.isCancellationRequested; } },
+        });
 
         this.dirtyFiles.clear();
         this.deletedFiles.clear();
-
-        // Phase 4: Save to disk
-        onProgress?.({ phase: 'saving', current: 0, total: 1 });
-        await this.saveToDisk(workspaceRoot);
-
+        if (token.isCancellationRequested) {
+            this._status = this.inner.getStats().files > 0 ? 'stale' : 'none';
+            return;
+        }
         this._status = 'ready';
     }
 
     async syncDirty(workspaceRoot: string): Promise<void> {
         if (this.dirtyFiles.size === 0 && this.deletedFiles.size === 0) { return; }
 
+        const storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
+        const workerPool = this.workerPool;
+        const dirtyPaths = new Set<string>([...this.dirtyFiles, ...this.deletedFiles]);
+
         for (const rel of this.deletedFiles) {
-            this.removeFile(rel);
+            this.inner.remove(rel);
+            this.fileMetadata.delete(rel);
         }
         this.deletedFiles.clear();
 
-        for (const rel of this.dirtyFiles) {
-            const absPath = path.resolve(workspaceRoot, rel);
-            try {
-                const uri = vscode.Uri.file(absPath);
-                const contentBytes = await vscode.workspace.fs.readFile(uri);
-                const content = Buffer.from(contentBytes).toString('utf-8');
-                const symbols = parseSymbols(absPath, rel, content);
+        if (this.dirtyFiles.size > 0) {
+            const files = [...this.dirtyFiles].map(rel => ({
+                absPath: path.resolve(workspaceRoot, rel),
+                relativePath: rel,
+            }));
 
-                this.removeFile(rel);
-                this.symbolsByFile.set(rel, symbols);
-                for (const sym of symbols) {
-                    const key = sym.name.toLowerCase();
-                    const arr = this.nameIndex.get(key);
-                    if (arr) { arr.push(sym); } else { this.nameIndex.set(key, [sym]); }
-                }
+            const result = workerPool
+                ? await workerPool.parse(files)
+                : await this.parseInProcess(files, workspaceRoot);
 
-                const stat = await vscode.workspace.fs.stat(uri);
-                this.fileMetadata.set(rel, {
-                    relativePath: rel,
-                    mtime: stat.mtime,
-                    size: stat.size,
-                    symbolCount: symbols.length,
-                });
-            } catch {
-                this.removeFile(rel);
+            // Group symbols by file
+            const grouped = new Map<string, SymbolEntry[]>();
+            for (const sym of result.symbols) {
+                const bucket = grouped.get(sym.relativePath);
+                if (bucket) { bucket.push(sym); } else { grouped.set(sym.relativePath, [sym]); }
+            }
+            for (const meta of result.metadata) {
+                if (!grouped.has(meta.relativePath)) { grouped.set(meta.relativePath, []); }
+                this.fileMetadata.set(meta.relativePath, meta);
+            }
+            for (const [file, symbols] of grouped) {
+                this.inner.update(file, symbols);
             }
         }
         this.dirtyFiles.clear();
 
+        await storage.saveDirty(
+            { symbolsByFile: this.inner.snapshot(), fileMetadata: new Map(this.fileMetadata) },
+            dirtyPaths,
+        );
+
         if (this._status === 'stale') { this._status = 'ready'; }
-        await this.saveToDisk(workspaceRoot);
     }
 
     searchSymbols(query: string, workspaceRoot: string, options: SearchOptions): SearchResult[] {
         if (this._status !== 'ready' && this._status !== 'stale') { return []; }
-
-        const results: SearchResult[] = [];
-
-        if (options.wholeWord && !options.regex) {
-            // Exact match via nameIndex
-            const key = options.caseSensitive ? query : query.toLowerCase();
-            const candidates = options.caseSensitive
-                ? this.getExactCaseSensitive(query)
-                : (this.nameIndex.get(key) || []);
-
-            for (const sym of candidates) {
-                results.push(this.symbolToResult(sym));
-            }
-        } else if (options.regex) {
-            // Regex match across all symbol names
-            try {
-                const flags = options.caseSensitive ? '' : 'i';
-                const re = new RegExp(query, flags);
-                for (const [name, syms] of this.nameIndex) {
-                    if (re.test(name)) {
-                        for (const sym of syms) {
-                            results.push(this.symbolToResult(sym));
-                        }
-                    }
-                }
-            } catch {
-                return [];
-            }
-        } else {
-            // Substring match
-            const lowerQuery = query.toLowerCase();
-            for (const [name, syms] of this.nameIndex) {
-                if (name.includes(lowerQuery)) {
-                    for (const sym of syms) {
-                        if (options.caseSensitive && !sym.name.includes(query)) { continue; }
-                        results.push(this.symbolToResult(sym));
-                    }
-                }
-            }
-        }
-
-        return results;
+        return this.inner.search(query, workspaceRoot, options);
     }
 
     async saveToDisk(workspaceRoot: string): Promise<void> {
-        const dir = path.join(workspaceRoot, INDEX_DIR);
-        const filePath = path.join(dir, INDEX_FILE);
-
-        const allSymbols: SymbolEntry[] = [];
-        for (const syms of this.symbolsByFile.values()) {
-            allSymbols.push(...syms);
-        }
-
-        const data: SerializedIndex = {
-            version: INDEX_VERSION,
-            createdAt: Date.now(),
-            workspaceRoot,
-            files: Array.from(this.fileMetadata.values()),
-            symbols: allSymbols,
-        };
-
-        try {
-            if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
-            fs.writeFileSync(filePath, JSON.stringify(data));
-        } catch {
-            // Silently fail disk persistence
-        }
+        const storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
+        await storage.saveFull({
+            symbolsByFile: this.inner.snapshot(),
+            fileMetadata: new Map(this.fileMetadata),
+        });
     }
 
     async loadFromDisk(workspaceRoot: string): Promise<boolean> {
-        const filePath = path.join(workspaceRoot, INDEX_DIR, INDEX_FILE);
-        try {
-            if (!fs.existsSync(filePath)) { return false; }
-            const raw = fs.readFileSync(filePath, 'utf-8');
-            const data: SerializedIndex = JSON.parse(raw);
-
-            if (data.version !== INDEX_VERSION) { return false; }
-
-            this.symbolsByFile.clear();
-            this.nameIndex.clear();
-            this.fileMetadata.clear();
-
-            for (const file of data.files) {
-                this.fileMetadata.set(file.relativePath, file);
-            }
-
-            for (const sym of data.symbols) {
-                const byFile = this.symbolsByFile.get(sym.relativePath);
-                if (byFile) { byFile.push(sym); } else { this.symbolsByFile.set(sym.relativePath, [sym]); }
-
-                const key = sym.name.toLowerCase();
-                const byName = this.nameIndex.get(key);
-                if (byName) { byName.push(sym); } else { this.nameIndex.set(key, [sym]); }
-            }
-
-            this._status = 'ready';
-            return true;
-        } catch {
-            return false;
-        }
+        const storage = new StorageManager({ workspaceRoot, shardCount: this.shardCount });
+        const snap = await storage.load();
+        if (snap.symbolsByFile.size === 0 && snap.fileMetadata.size === 0) { return false; }
+        this.inner.replaceAll(snap.symbolsByFile);
+        this.fileMetadata.clear();
+        for (const [k, v] of snap.fileMetadata) { this.fileMetadata.set(k, v); }
+        this._status = 'ready';
+        return true;
     }
 
     clear(): void {
-        this.symbolsByFile.clear();
-        this.nameIndex.clear();
+        this.inner.replaceAll(new Map());
         this.fileMetadata.clear();
         this.dirtyFiles.clear();
         this.deletedFiles.clear();
@@ -301,44 +228,75 @@ export class SymbolIndex {
     }
 
     clearDisk(workspaceRoot: string): void {
-        const filePath = path.join(workspaceRoot, INDEX_DIR, INDEX_FILE);
-        try { fs.unlinkSync(filePath); } catch { /* ignore */ }
-    }
-
-    // ── Private helpers ──
-
-    private removeFile(relativePath: string): void {
-        const oldSymbols = this.symbolsByFile.get(relativePath);
-        if (oldSymbols) {
-            for (const sym of oldSymbols) {
-                const key = sym.name.toLowerCase();
-                const arr = this.nameIndex.get(key);
-                if (arr) {
-                    const filtered = arr.filter(s => s.relativePath !== relativePath);
-                    if (filtered.length > 0) { this.nameIndex.set(key, filtered); }
-                    else { this.nameIndex.delete(key); }
-                }
-            }
-            this.symbolsByFile.delete(relativePath);
+        const indexDir = path.join(workspaceRoot, '.sisearch');
+        try {
+            fs.rmSync(indexDir, { recursive: true, force: true });
+        } catch {
+            // ignore
         }
-        this.fileMetadata.delete(relativePath);
     }
 
-    private getExactCaseSensitive(name: string): SymbolEntry[] {
-        const key = name.toLowerCase();
-        const candidates = this.nameIndex.get(key);
-        if (!candidates) { return []; }
-        return candidates.filter(s => s.name === name);
+    // ── Private helpers ─────────────────────────────────────────────────
+
+    private async scanWorkspace(
+        workspaceRoot: string,
+        extensions: string[],
+        excludePatterns: string[],
+        includePaths: string[] | undefined,
+        token: vscode.CancellationToken,
+    ): Promise<FileCandidate[]> {
+        const extGlob = `*{${extensions.join(',')}}`;
+        const excludeGlob = excludePatterns.length ? `{${excludePatterns.join(',')}}` : undefined;
+        const prefixes = includePaths && includePaths.length > 0 ? includePaths : ['**'];
+
+        const allUris: vscode.Uri[] = [];
+        for (const prefix of prefixes) {
+            if (token.isCancellationRequested) { break; }
+            const pattern = prefix === '**' ? `**/${extGlob}` : `${prefix}/**/${extGlob}`;
+            const uris = await vscode.workspace.findFiles(pattern, excludeGlob);
+            allUris.push(...uris);
+        }
+
+        const candidates: FileCandidate[] = [];
+        for (const uri of allUris) {
+            try {
+                const stat = await vscode.workspace.fs.stat(uri);
+                const rel = path.relative(workspaceRoot, uri.fsPath);
+                candidates.push({ relativePath: rel, absPath: uri.fsPath, mtime: stat.mtime, size: stat.size });
+            } catch {
+                // Skip files we cannot stat
+            }
+        }
+        return candidates;
     }
 
-    private symbolToResult(sym: SymbolEntry): SearchResult {
-        return {
-            filePath: sym.filePath,
-            relativePath: sym.relativePath,
-            lineNumber: sym.lineNumber,
-            lineContent: sym.lineContent,
-            matchStart: sym.column,
-            matchLength: sym.name.length,
-        };
+    /**
+     * 无 WorkerPool 时的回退路径：在主线程同步解析（仅用于测试/降级）。
+     */
+    private async parseInProcess(
+        files: Array<{ absPath: string; relativePath: string }>,
+        workspaceRoot: string,
+    ): Promise<{ symbols: SymbolEntry[]; metadata: IndexedFile[]; errors: string[] }> {
+        const { parseSymbols } = await import('./symbolParser');
+        const symbols: SymbolEntry[] = [];
+        const metadata: IndexedFile[] = [];
+        const errors: string[] = [];
+
+        for (const f of files) {
+            try {
+                const uri = vscode.Uri.file(f.absPath);
+                const contentBytes = await vscode.workspace.fs.readFile(uri);
+                const content = Buffer.from(contentBytes).toString('utf-8');
+                const parsed = parseSymbols(f.absPath, f.relativePath, content);
+                symbols.push(...parsed);
+                const stat = await vscode.workspace.fs.stat(uri);
+                metadata.push({ relativePath: f.relativePath, mtime: stat.mtime, size: stat.size, symbolCount: parsed.length });
+            } catch (e) {
+                errors.push(`${f.relativePath}: ${(e as Error).message}`);
+            }
+        }
+        // Silence unused parameter — workspaceRoot not needed after refactor
+        void workspaceRoot;
+        return { symbols, metadata, errors };
     }
 }
