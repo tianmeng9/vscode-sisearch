@@ -4,6 +4,7 @@
 import type { SymbolEntry, IndexedFile } from '../index/indexTypes';
 import type { FileCandidate, ClassifyResult } from './batchClassifier';
 import type { ParseBatchResult } from './workerPool';
+import { groupParseResult } from './parseResultGrouping';
 
 export interface SyncDeps {
     scanFiles: (workspaceRoot: string) => Promise<FileCandidate[]>;
@@ -81,23 +82,8 @@ export class SyncOrchestrator {
                 classified.toProcess.map(f => ({ absPath: f.absPath, relativePath: f.relativePath }))
             );
 
-            // Group symbols by file and apply to index
-            const grouped = new Map<string, SymbolEntry[]>();
-            for (const symbol of parsed.symbols) {
-                const bucket = grouped.get(symbol.relativePath);
-                if (bucket) {
-                    bucket.push(symbol);
-                } else {
-                    grouped.set(symbol.relativePath, [symbol]);
-                }
-            }
-
-            // Also add files that had no symbols (so metadata is tracked)
-            for (const meta of parsed.metadata) {
-                if (!grouped.has(meta.relativePath)) {
-                    grouped.set(meta.relativePath, []);
-                }
-            }
+            // Group symbols by file and apply to index(共享 helper,与 syncDirty 路径一致)
+            const grouped = groupParseResult(parsed);
 
             // 先回写 per-file 元数据,随后才 index.update —— 保证 update 时元数据已就绪
             this.deps.index.applyMetadata(parsed.metadata);

@@ -19,6 +19,7 @@ import type { FileCandidate } from './sync/batchClassifier';
 import { classifyBatches } from './sync/batchClassifier';
 import type { WorkerPool, ParseBatchResult } from './sync/workerPool';
 import { SyncOrchestrator } from './sync/syncOrchestrator';
+import { groupParseResult } from './sync/parseResultGrouping';
 
 const DEFAULT_SHARD_COUNT = 16;
 
@@ -225,16 +226,11 @@ export class SymbolIndex {
         return this.parseInProcess(files, workspaceRoot);
     }
 
-    /** syncDirty 路径:把 parse 结果回灌 inner + fileMetadata。 */
+    /** syncDirty 路径:把 parse 结果回灌 inner + fileMetadata。
+     *  与 SyncOrchestrator.synchronize 共享 groupParseResult 语义。 */
     private applyParseResult(result: ParseBatchResult): void {
-        // Group symbols by file
-        const grouped = new Map<string, SymbolEntry[]>();
-        for (const sym of result.symbols) {
-            const bucket = grouped.get(sym.relativePath);
-            if (bucket) { bucket.push(sym); } else { grouped.set(sym.relativePath, [sym]); }
-        }
+        const grouped = groupParseResult(result);
         for (const meta of result.metadata) {
-            if (!grouped.has(meta.relativePath)) { grouped.set(meta.relativePath, []); }
             this.fileMetadata.set(meta.relativePath, meta);
         }
         for (const [file, symbols] of grouped) {
