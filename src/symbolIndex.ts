@@ -39,6 +39,9 @@ export class SymbolIndex {
     private workerPool: WorkerPool | undefined;
     // StorageManager 按 workspaceRoot 记忆化 —— 避免每次 sync/save/load 重新 new
     private readonly storageByRoot = new Map<string, StorageManager>();
+    // P7.3: 状态机事件化，替代 composition 层 2s 轮询
+    private readonly _onStatusChanged = new vscode.EventEmitter<IndexStatus>();
+    private readonly _onStatsChanged = new vscode.EventEmitter<{ files: number; symbols: number }>();
 
     constructor(deps: SymbolIndexDeps = {}) {
         this.workerPool = deps.workerPool;
@@ -47,11 +50,35 @@ export class SymbolIndex {
 
     get status(): IndexStatus { return this._status; }
 
-    /** @internal 测试钩子——不得用于生产代码路径。 */
-    _setStatusForTest(next: IndexStatus): void { this._status = next; }
+    /** P7.3: status 状态机转换事件;相等守卫,重复赋值不 fire。 */
+    get onStatusChanged(): vscode.Event<IndexStatus> { return this._onStatusChanged.event; }
+
+    /** P7.3: stats 数量变更事件;仅在批处理完成末尾 fire,避免热循环风暴。 */
+    get onStatsChanged(): vscode.Event<{ files: number; symbols: number }> { return this._onStatsChanged.event; }
+
+    /** 释放 EventEmitter;由 composition 层在 ExtensionContext.subscriptions 中登记。 */
+    dispose(): void {
+        this._onStatusChanged.dispose();
+        this._onStatsChanged.dispose();
+    }
+
+    /** @internal 测试钩子——不得用于生产代码路径。走 setStatus 以保持事件对称。 */
+    _setStatusForTest(next: IndexStatus): void { this.setStatus(next); }
 
     /** @internal 测试钩子:暴露 storageByRoot 大小,用于验证路径标准化。 */
     _getStorageCountForTest(): number { return this.storageByRoot.size; }
+
+    /** P7.3: 所有 this._status = X 赋值都走这里,带相等守卫,仅在状态确实变化时 fire。 */
+    private setStatus(next: IndexStatus): void {
+        if (this._status === next) { return; }
+        this._status = next;
+        this._onStatusChanged.fire(next);
+    }
+
+    /** P7.3: 在批处理完成末尾调用,fire 当前 stats 快照。 */
+    private emitStats(): void {
+        this._onStatsChanged.fire(this.inner.getStats());
+    }
 
     getStats(): { files: number; symbols: number } {
         return this.inner.getStats();
@@ -60,13 +87,13 @@ export class SymbolIndex {
     markDirty(relativePath: string): void {
         this.dirtyFiles.add(relativePath);
         this.deletedFiles.delete(relativePath);
-        if (this._status === 'ready') { this._status = 'stale'; }
+        if (this._status === 'ready') { this.setStatus('stale'); }
     }
 
     markDeleted(relativePath: string): void {
         this.deletedFiles.add(relativePath);
         this.dirtyFiles.delete(relativePath);
-        if (this._status === 'ready') { this._status = 'stale'; }
+        if (this._status === 'ready') { this.setStatus('stale'); }
     }
 
     setWorkerPool(workerPool: WorkerPool | undefined): void {
@@ -81,7 +108,7 @@ export class SymbolIndex {
         onProgress?: (p: SyncProgress) => void,
         includePaths?: string[],
     ): Promise<void> {
-        this._status = 'building';
+        this.setStatus('building');
 
         const storage = this.getStorage(workspaceRoot);
         const orchestrator = new SyncOrchestrator({
@@ -118,10 +145,13 @@ export class SymbolIndex {
         this.dirtyFiles.clear();
         this.deletedFiles.clear();
         if (token.isCancellationRequested) {
-            this._status = this.inner.getStats().files > 0 ? 'stale' : 'none';
+            const fallback = this.inner.getStats().files > 0 ? 'stale' : 'none';
+            this.setStatus(fallback);
+            this.emitStats();
             return;
         }
-        this._status = 'ready';
+        this.setStatus('ready');
+        this.emitStats();
     }
 
     async syncDirty(workspaceRoot: string): Promise<void> {
@@ -152,7 +182,8 @@ export class SymbolIndex {
             dirtyPaths,
         );
 
-        if (this._status === 'stale') { this._status = 'ready'; }
+        if (this._status === 'stale') { this.setStatus('ready'); }
+        this.emitStats();
     }
 
     searchSymbols(query: string, workspaceRoot: string, options: SearchOptions): SearchResult[] {
@@ -173,7 +204,8 @@ export class SymbolIndex {
         this.inner.replaceAll(snap.symbolsByFile);
         this.fileMetadata.clear();
         for (const [k, v] of snap.fileMetadata) { this.fileMetadata.set(k, v); }
-        this._status = 'ready';
+        this.setStatus('ready');
+        this.emitStats();
         return true;
     }
 
@@ -182,7 +214,8 @@ export class SymbolIndex {
         this.fileMetadata.clear();
         this.dirtyFiles.clear();
         this.deletedFiles.clear();
-        this._status = 'none';
+        this.setStatus('none');
+        this.emitStats();
     }
 
     clearDisk(workspaceRoot: string): void {

@@ -75,7 +75,7 @@ export function attachWorkerPool(
  * 2. 构造 AutoSyncController 并接 syncDirty
  * 3. 构造 FileWatcher 把脏文件事件接 autoSync
  * 4. 按扩展名白名单过滤 onDidSaveTextDocument,触发 autoSync.flush()
- * 5. 挂 setInterval(2000) 轮询状态栏(后续 P5.3 换事件驱动)
+ * 5. 订阅 SymbolIndex onStatusChanged/onStatsChanged 事件驱动状态栏刷新(替代 2s 轮询)
  */
 export function bindWorkspace(
     context: vscode.ExtensionContext,
@@ -84,6 +84,11 @@ export function bindWorkspace(
 ): void {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceRoot) { return; }
+
+    // P7.3: 事件驱动,替代 2s setInterval 轮询。
+    context.subscriptions.push(symbolIndex.onStatusChanged(() => refreshStatus()));
+    context.subscriptions.push(symbolIndex.onStatsChanged(() => refreshStatus()));
+    context.subscriptions.push({ dispose: () => symbolIndex.dispose() });
 
     symbolIndex.loadFromDisk(workspaceRoot).then(loaded => {
         if (loaded) { refreshStatus(); }
@@ -126,6 +131,4 @@ export function bindWorkspace(
         );
     }
 
-    const statusTimer = setInterval(refreshStatus, 2000);
-    context.subscriptions.push({ dispose: () => clearInterval(statusTimer) });
 }

@@ -39,13 +39,13 @@ suite('SymbolIndex (façade)', () => {
     test('status transitions to stale after markDirty when ready', () => {
         const index = new SymbolIndex();
         // Force status to ready via test hook (uses internal _setStatus if present)
-        const setStatus = (index as unknown as { _setStatusForTest?: (s: string) => void })._setStatusForTest;
-        if (!setStatus) {
+        const hook = (index as unknown as { _setStatusForTest?: (s: string) => void })._setStatusForTest;
+        if (!hook) {
             // If the façade does not expose a test hook, skip — but verify façade surface instead
             assert.ok(typeof index.markDirty === 'function');
             return;
         }
-        setStatus('ready');
+        hook.call(index, 'ready'); // preserve `this` binding (P7.3 setStatus requires it)
         index.markDirty('a.c');
         assert.strictEqual(index.status, 'stale');
     });
@@ -78,6 +78,69 @@ suite('SymbolIndex (façade)', () => {
             assert.strictEqual(getCount(), 0, 'clearDisk should invalidate normalized key regardless of trailing slash');
         } finally {
             fs.rmSync(workspaceRoot, { recursive: true, force: true });
+        }
+    });
+});
+
+suite('SymbolIndex events (P7.3)', () => {
+    test('onStatusChanged fires once per transition, not on equal assignments', () => {
+        const index = new SymbolIndex();
+        const events: string[] = [];
+        const disp = index.onStatusChanged(s => events.push(s));
+        try {
+            // _setStatusForTest 走 setStatus,相等守卫生效
+            const hook = (index as unknown as { _setStatusForTest(s: string): void })._setStatusForTest;
+            hook.call(index, 'building');
+            hook.call(index, 'building'); // no-fire
+            hook.call(index, 'ready');
+            hook.call(index, 'ready');    // no-fire
+            assert.deepStrictEqual(events, ['building', 'ready']);
+        } finally {
+            disp.dispose();
+            index.dispose();
+        }
+    });
+
+    test('onStatsChanged does not fire when loadFromDisk finds no snapshot', async () => {
+        // 空目录 loadFromDisk 返回 false,不 fire stats
+        const emptyWs = fs.mkdtempSync(path.join(os.tmpdir(), 'sisearch-facade-evt-'));
+        try {
+            const index = new SymbolIndex();
+            const fires: Array<{ files: number; symbols: number }> = [];
+            const disp = index.onStatsChanged(s => fires.push(s));
+            try {
+                const loaded = await index.loadFromDisk(emptyWs);
+                assert.strictEqual(loaded, false);
+                assert.strictEqual(fires.length, 0, 'no-snapshot load should not fire stats');
+            } finally {
+                disp.dispose();
+                index.dispose();
+            }
+        } finally {
+            fs.rmSync(emptyWs, { recursive: true, force: true });
+        }
+    });
+
+    test('clear fires onStatusChanged and onStatsChanged', () => {
+        const index = new SymbolIndex();
+        // 先推到 ready 状态,才能观察 clear 导致的 none 事件
+        const hook = (index as unknown as { _setStatusForTest(s: string): void })._setStatusForTest;
+        hook.call(index, 'ready');
+
+        const statusEvents: string[] = [];
+        const statsEvents: Array<{ files: number; symbols: number }> = [];
+        const d1 = index.onStatusChanged(s => statusEvents.push(s));
+        const d2 = index.onStatsChanged(s => statsEvents.push(s));
+
+        try {
+            index.clear();
+            assert.deepStrictEqual(statusEvents, ['none']);
+            assert.strictEqual(statsEvents.length, 1);
+            assert.deepStrictEqual(statsEvents[0], { files: 0, symbols: 0 });
+        } finally {
+            d1.dispose();
+            d2.dispose();
+            index.dispose();
         }
     });
 });
