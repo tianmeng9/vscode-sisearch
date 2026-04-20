@@ -132,6 +132,58 @@ suite('syncOrchestrator', () => {
         assert.strictEqual(appliedMeta[0].relativePath, 'x.c');
     });
 
+    test('forwards workerPool onBatchComplete as parsing progress (regression: status bar stuck at 0/N)', async () => {
+        const progressEvents: Array<{ phase: string; current: number; total: number; currentFile?: string }> = [];
+
+        const orchestrator = new SyncOrchestrator({
+            scanFiles: async () => [
+                { relativePath: 'a.c', absPath: '/ws/a.c', mtime: 1, size: 1 },
+                { relativePath: 'b.c', absPath: '/ws/b.c', mtime: 1, size: 1 },
+            ],
+            classify: async () => ({
+                toProcess: [
+                    { relativePath: 'a.c', absPath: '/ws/a.c', mtime: 1, size: 1 },
+                    { relativePath: 'b.c', absPath: '/ws/b.c', mtime: 1, size: 1 },
+                ],
+                toDelete: [],
+            }),
+            workerPool: {
+                // Simulate WorkerPool firing onBatchComplete after each batch.
+                parse: async (files, onBatchComplete) => {
+                    onBatchComplete?.(1, files.length, files[0].relativePath);
+                    onBatchComplete?.(2, files.length, files[1].relativePath);
+                    return {
+                        symbols: [],
+                        metadata: files.map(f => ({ relativePath: f.relativePath, mtime: 1, size: 1, symbolCount: 0 })),
+                        errors: [],
+                    };
+                },
+            },
+            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
+            storage: { saveFull: async () => {} },
+            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+            onProgress: (phase, current, total, currentFile) => {
+                progressEvents.push({ phase, current, total, currentFile });
+            },
+        });
+
+        await orchestrator.synchronize({ workspaceRoot: '/ws' });
+
+        const parsingEvents = progressEvents.filter(e => e.phase === 'parsing');
+        // Must see at least: initial (0, total), then per-batch updates
+        assert.ok(parsingEvents.length >= 3, `expected >=3 parsing events, got ${parsingEvents.length}`);
+        // First event must be the initial 0/total
+        assert.strictEqual(parsingEvents[0].current, 0);
+        assert.strictEqual(parsingEvents[0].total, 2);
+        // Later events must carry progress > 0 and currentFile
+        const withProgress = parsingEvents.filter(e => e.current > 0);
+        assert.ok(withProgress.length >= 2, 'expected >=2 per-batch updates');
+        assert.ok(withProgress.every(e => typeof e.currentFile === 'string'), 'per-batch updates must include currentFile');
+        // Final parsing event reports all files done
+        const lastParsing = parsingEvents[parsingEvents.length - 1];
+        assert.strictEqual(lastParsing.current, 2);
+    });
+
     test('does not call storage when nothing changed', async () => {
         let anySaveCalled = false;
 

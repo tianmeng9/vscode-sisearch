@@ -89,6 +89,63 @@ suite('workerPool', () => {
         await pool.dispose();
     });
 
+    test('onBatchComplete fires per batch with monotonically increasing done count (regression: parsing progress was stuck at 0/N)', async () => {
+        const pool = new WorkerPool({
+            size: 2,
+            batchSize: 3,                              // force multiple batches
+            workerFactory: async () => makeStubWorker(),
+        });
+
+        const files = Array.from({ length: 10 }, (_, i) => ({
+            absPath: `/ws/file${i}.c`,
+            relativePath: `file${i}.c`,
+        }));
+
+        const progressCalls: Array<{ done: number; total: number; lastFile?: string }> = [];
+        const result = await pool.parse(files, (done, total, lastFile) => {
+            progressCalls.push({ done, total, lastFile });
+        });
+
+        // 10 files / 3 per batch = 4 batches (3+3+3+1)
+        assert.ok(progressCalls.length >= 2, `expected at least 2 progress callbacks, got ${progressCalls.length}`);
+        // Final callback must report all files done
+        const last = progressCalls[progressCalls.length - 1];
+        assert.strictEqual(last.done, 10, 'final done count must equal total');
+        assert.strictEqual(last.total, 10, 'total must be stable');
+        // done must be monotonically non-decreasing
+        let prev = 0;
+        for (const c of progressCalls) {
+            assert.ok(c.done >= prev, `done regressed: ${prev} -> ${c.done}`);
+            assert.ok(c.done <= c.total, `done ${c.done} exceeded total ${c.total}`);
+            prev = c.done;
+        }
+        // lastFile is attached on every callback (sidebar progress needs this)
+        for (const c of progressCalls) {
+            assert.ok(c.lastFile && c.lastFile.startsWith('file'), `missing lastFile on callback: ${JSON.stringify(c)}`);
+        }
+        // And the parse result still contains everything
+        assert.strictEqual(result.symbols.length, 10);
+        await pool.dispose();
+    });
+
+    test('onBatchComplete not required (backward compat)', async () => {
+        const pool = new WorkerPool({
+            size: 1,
+            batchSize: 2,
+            workerFactory: async () => makeStubWorker(),
+        });
+
+        const files = Array.from({ length: 5 }, (_, i) => ({
+            absPath: `/ws/${i}.c`,
+            relativePath: `${i}.c`,
+        }));
+
+        // no callback provided — must not throw
+        const result = await pool.parse(files);
+        assert.strictEqual(result.symbols.length, 5);
+        await pool.dispose();
+    });
+
     test('multiple workers split work evenly', async () => {
         const workerCalls: number[] = [0, 0];
         const pool = new WorkerPool({

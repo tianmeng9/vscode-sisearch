@@ -14,7 +14,10 @@ export interface SyncDeps {
         previousFiles: Map<string, IndexedFile>;
     }) => Promise<ClassifyResult>;
     workerPool: {
-        parse(files: Array<{ absPath: string; relativePath: string }>): Promise<ParseBatchResult>;
+        parse(
+            files: Array<{ absPath: string; relativePath: string }>,
+            onBatchComplete?: (done: number, total: number, lastFile?: string) => void,
+        ): Promise<ParseBatchResult>;
     };
     index: {
         update(file: string, symbols: SymbolEntry[]): void;
@@ -79,7 +82,10 @@ export class SyncOrchestrator {
         if (classified.toProcess.length > 0) {
             this.deps.onProgress?.('parsing', 0, classified.toProcess.length);
             const parsed = await this.deps.workerPool.parse(
-                classified.toProcess.map(f => ({ absPath: f.absPath, relativePath: f.relativePath }))
+                classified.toProcess.map(f => ({ absPath: f.absPath, relativePath: f.relativePath })),
+                (done, total, lastFile) => {
+                    this.deps.onProgress?.('parsing', done, total, lastFile);
+                },
             );
 
             // Group symbols by file and apply to index(共享 helper,与 syncDirty 路径一致)
