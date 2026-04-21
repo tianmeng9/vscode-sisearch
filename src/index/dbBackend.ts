@@ -187,6 +187,155 @@ export class DbBackend {
         txn();
     }
 
+    search(
+        query: string,
+        options: SearchOptions,
+        pagination: SearchPagination = { limit: 200, offset: 0 }
+    ): SearchResult[] {
+        if (!this.db || !query) { return []; }
+
+        const rows = this.selectForQuery(query, options, pagination);
+        const out: SearchResult[] = [];
+        for (const row of rows) {
+            // row: { name, relativePath, lineNumber, column }
+            // lineContent 在 façade 层再填;在 DbBackend 层返回空占位
+            const absPath = row.relativePath;   // 替换真实 absPath 在 façade 侧
+            const lineContent = '';
+            out.push({
+                filePath: absPath,
+                relativePath: row.relativePath,
+                lineNumber: row.lineNumber,
+                lineContent,
+                matchStart: 0,
+                matchLength: row.name.length,
+            });
+        }
+        return out;
+    }
+
+    countMatches(query: string, options: SearchOptions): number {
+        if (!this.db || !query) { return 0; }
+        return this.selectCountForQuery(query, options);
+    }
+
+    private selectForQuery(
+        query: string, options: SearchOptions, p: SearchPagination
+    ): Array<{ name: string; relativePath: string; lineNumber: number; column: number }> {
+        // 精确 + case-sensitive → 直接 name=?
+        if (options.wholeWord && options.caseSensitive && !options.regex) {
+            return this.db!.prepare(
+                `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
+                 FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.name = ?
+                 ORDER BY f.relative_path, s.line_number
+                 LIMIT ? OFFSET ?`
+            ).all(query, p.limit, p.offset) as any;
+        }
+        // 精确 + case-insensitive → FTS5 MATCH(unicode61 自带 case fold)
+        if (options.wholeWord && !options.regex) {
+            const fts = escapeFtsLiteral(query);
+            return this.db!.prepare(
+                `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
+                 FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
+                                  JOIN files f ON f.id = s.file_id
+                 WHERE symbols_fts MATCH ?
+                 ORDER BY f.relative_path, s.line_number
+                 LIMIT ? OFFSET ?`
+            ).all(fts, p.limit, p.offset) as any;
+        }
+        // regex → 提取 literal token 粗过滤 + RegExp 精过滤
+        if (options.regex) {
+            const tokens = extractLiteralTokens(query);
+            const flags = options.caseSensitive ? '' : 'i';
+            let re: RegExp;
+            try { re = new RegExp(query, flags); } catch { return []; }
+            let rows: any[];
+            if (tokens.length === 0) {
+                rows = this.db!.prepare(
+                    `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
+                     FROM symbols s JOIN files f ON f.id = s.file_id
+                     LIMIT 10000`
+                ).all();
+            } else {
+                const fts = tokens.map(escapeFtsLiteral).join(' OR ');
+                rows = this.db!.prepare(
+                    `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
+                     FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
+                                      JOIN files f ON f.id = s.file_id
+                     WHERE symbols_fts MATCH ?`
+                ).all(fts);
+            }
+            const filtered = rows.filter((r: any) => re.test(r.name));
+            // Apply sort + pagination
+            filtered.sort((a: any, b: any) =>
+                a.relativePath.localeCompare(b.relativePath) || a.lineNumber - b.lineNumber);
+            return filtered.slice(p.offset, p.offset + p.limit);
+        }
+        // substring
+        const tokens = extractLiteralTokens(query);
+        const like = '%' + query.replace(/[%_]/g, '\\$&') + '%';
+        if (tokens.length === 0) {
+            // 无可用 token,直接 LIKE 扫全表(上限 10k)
+            return this.db!.prepare(
+                `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
+                 FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.name ${options.caseSensitive ? 'GLOB' : 'LIKE'} ? ESCAPE '\\'
+                 ORDER BY f.relative_path, s.line_number
+                 LIMIT ? OFFSET ?`
+            ).all(options.caseSensitive ? `*${query}*` : like, p.limit, p.offset) as any;
+        }
+        const fts = tokens.map(escapeFtsLiteral).join(' OR ');
+        return this.db!.prepare(
+            `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
+             FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
+                              JOIN files f ON f.id = s.file_id
+             WHERE symbols_fts MATCH ? AND s.name ${options.caseSensitive ? 'GLOB' : 'LIKE'} ? ESCAPE '\\'
+             ORDER BY f.relative_path, s.line_number
+             LIMIT ? OFFSET ?`
+        ).all(fts, options.caseSensitive ? `*${query}*` : like, p.limit, p.offset) as any;
+    }
+
+    private selectCountForQuery(query: string, options: SearchOptions): number {
+        // 用 search() 的同构查询,但换 SELECT COUNT(*),不带 LIMIT/OFFSET
+        if (options.wholeWord && options.caseSensitive && !options.regex) {
+            const r = this.db!.prepare('SELECT COUNT(*) AS c FROM symbols WHERE name = ?').get(query) as { c: number };
+            return r.c;
+        }
+        if (options.wholeWord && !options.regex) {
+            const r = this.db!.prepare('SELECT COUNT(*) AS c FROM symbols_fts WHERE symbols_fts MATCH ?')
+                             .get(escapeFtsLiteral(query)) as { c: number };
+            return r.c;
+        }
+        if (options.regex) {
+            // regex 没法预估,走 full scan 上限 10000 再 filter
+            const tokens = extractLiteralTokens(query);
+            let re: RegExp;
+            try { re = new RegExp(query, options.caseSensitive ? '' : 'i'); } catch { return 0; }
+            let rows: any[];
+            if (tokens.length === 0) {
+                rows = this.db!.prepare('SELECT name FROM symbols LIMIT 10000').all();
+            } else {
+                rows = this.db!.prepare('SELECT s.name FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid WHERE symbols_fts MATCH ?')
+                             .all(tokens.map(escapeFtsLiteral).join(' OR '));
+            }
+            return rows.filter((r: any) => re.test(r.name)).length;
+        }
+        const tokens = extractLiteralTokens(query);
+        const like = '%' + query.replace(/[%_]/g, '\\$&') + '%';
+        if (tokens.length === 0) {
+            const r = this.db!.prepare(
+                `SELECT COUNT(*) AS c FROM symbols WHERE name ${options.caseSensitive ? 'GLOB' : 'LIKE'} ? ESCAPE '\\'`
+            ).get(options.caseSensitive ? `*${query}*` : like) as { c: number };
+            return r.c;
+        }
+        const fts = tokens.map(escapeFtsLiteral).join(' OR ');
+        const r = this.db!.prepare(
+            `SELECT COUNT(*) AS c FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
+             WHERE symbols_fts MATCH ? AND s.name ${options.caseSensitive ? 'GLOB' : 'LIKE'} ? ESCAPE '\\'`
+        ).get(fts, options.caseSensitive ? `*${query}*` : like) as { c: number };
+        return r.c;
+    }
+
     private ensureMeta(): void {
         const upsert = this.db!.prepare('INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)');
         upsert.run('schema_version', String(CURRENT_SCHEMA_VERSION));

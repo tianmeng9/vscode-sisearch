@@ -132,3 +132,88 @@ suite('DbBackend writeBatch', () => {
         assert.strictEqual(db.getStats().files, 0);
     });
 });
+
+suite('DbBackend search', () => {
+    function seed(db: DbBackend): void {
+        db.writeBatch({
+            metadata: [
+                { relativePath: 'a.c', mtime: 1, size: 100, symbolCount: 3 },
+                { relativePath: 'b.h', mtime: 1, size: 100, symbolCount: 1 },
+            ],
+            symbols: [
+                { name: 'amdgpu_device_init', kind: 'function', filePath: '/a.c', relativePath: 'a.c',
+                  lineNumber: 10, endLineNumber: 10, column: 0, lineContent: '' },
+                { name: 'amdgpu_fini', kind: 'function', filePath: '/a.c', relativePath: 'a.c',
+                  lineNumber: 20, endLineNumber: 20, column: 0, lineContent: '' },
+                { name: 'AMDGPU_MAX', kind: 'macro', filePath: '/a.c', relativePath: 'a.c',
+                  lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '' },
+                { name: 'init', kind: 'function', filePath: '/b.h', relativePath: 'b.h',
+                  lineNumber: 5, endLineNumber: 5, column: 0, lineContent: '' },
+            ],
+            deletedRelativePaths: [],
+        });
+    }
+
+    test('whole word exact (case-sensitive): hits idx_symbols_name', () => {
+        const db = new DbBackend(':memory:'); db.openOrInit(); seed(db);
+        const r = db.search('amdgpu_device_init', { caseSensitive: true, wholeWord: true, regex: false });
+        assert.strictEqual(r.length, 1);
+        assert.strictEqual(r[0].relativePath, 'a.c');
+        assert.strictEqual(r[0].lineNumber, 10);
+    });
+
+    test('whole word exact (case-insensitive): FTS5 unicode61 case-folded', () => {
+        const db = new DbBackend(':memory:'); db.openOrInit(); seed(db);
+        const r = db.search('AMDGPU_DEVICE_INIT', { caseSensitive: false, wholeWord: true, regex: false });
+        assert.strictEqual(r.length, 1);
+    });
+
+    test('substring (non-whole-word): FTS5 prefix + LIKE', () => {
+        const db = new DbBackend(':memory:'); db.openOrInit(); seed(db);
+        const r = db.search('amdgpu', { caseSensitive: false, wholeWord: false, regex: false });
+        // 所有含 amdgpu 的符号都应命中
+        assert.strictEqual(r.length, 3);
+    });
+
+    test('pagination: limit + offset', () => {
+        const db = new DbBackend(':memory:'); db.openOrInit(); seed(db);
+        const r1 = db.search('init', { caseSensitive: false, wholeWord: false, regex: false },
+                             { limit: 1, offset: 0 });
+        assert.strictEqual(r1.length, 1);
+        const r2 = db.search('init', { caseSensitive: false, wholeWord: false, regex: false },
+                             { limit: 1, offset: 1 });
+        assert.strictEqual(r2.length, 1);
+        assert.notStrictEqual(r1[0].lineNumber + '::' + r1[0].relativePath,
+                              r2[0].lineNumber + '::' + r2[0].relativePath);
+    });
+
+    test('countMatches returns total without LIMIT', () => {
+        const db = new DbBackend(':memory:'); db.openOrInit(); seed(db);
+        const n = db.countMatches('init', { caseSensitive: false, wholeWord: false, regex: false });
+        assert.ok(n >= 2);
+    });
+
+    test('empty query returns empty array', () => {
+        const db = new DbBackend(':memory:'); db.openOrInit(); seed(db);
+        assert.deepStrictEqual(db.search('', { caseSensitive: false, wholeWord: true, regex: false }), []);
+    });
+
+    test('regex search: literal token coarse + RegExp fine', () => {
+        const db = new DbBackend(':memory:'); db.openOrInit(); seed(db);
+        const r = db.search('amdgpu.*init', { caseSensitive: false, wholeWord: false, regex: true });
+        // amdgpu_device_init 满足 regex;AMDGPU_MAX 不满足
+        const names = r.map(x => x.lineNumber + ':' + x.relativePath);
+        assert.ok(names.some(n => n.includes('a.c')));
+    });
+
+    test('results sorted by relativePath then lineNumber', () => {
+        const db = new DbBackend(':memory:'); db.openOrInit(); seed(db);
+        const r = db.search('init', { caseSensitive: false, wholeWord: false, regex: false });
+        for (let i = 1; i < r.length; i++) {
+            const prev = r[i-1], cur = r[i];
+            const cmp = prev.relativePath.localeCompare(cur.relativePath);
+            if (cmp !== 0) { assert.ok(cmp < 0); }
+            else { assert.ok(prev.lineNumber <= cur.lineNumber); }
+        }
+    });
+});
