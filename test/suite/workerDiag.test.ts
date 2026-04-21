@@ -1,15 +1,48 @@
 // test/suite/workerDiag.test.ts
 // workerDiag 契约:
 //   1. formatDiagLine 输出一行 JSON,含 timestamp/event/pid,+ 可选 payload,以 \n 结尾
-//   2. appendDiag 同步落盘 + 自动建目录 + 吞异常(诊断失败不能影响主流程)
+//   2. appendDiag 默认关闭(no-op),SISEARCH_WORKER_DIAG=1 时才同步落盘
+//   3. appendDiag 吞异常(诊断失败不能影响主流程)
 
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { formatDiagLine, appendDiag, resolveDiagLogPath } from '../../src/sync/workerDiag';
+import { formatDiagLine, appendDiag, resolveDiagLogPath, isDiagEnabled } from '../../src/sync/workerDiag';
 
 suite('workerDiag', () => {
+    // 所有 appendDiag 行为测试都需要启用 env;测完恢复,避免污染其它 suite。
+    let savedEnv: string | undefined;
+    setup(() => {
+        savedEnv = process.env.SISEARCH_WORKER_DIAG;
+        process.env.SISEARCH_WORKER_DIAG = '1';
+    });
+    teardown(() => {
+        if (savedEnv === undefined) {
+            delete process.env.SISEARCH_WORKER_DIAG;
+        } else {
+            process.env.SISEARCH_WORKER_DIAG = savedEnv;
+        }
+    });
+
+    test('isDiagEnabled reflects SISEARCH_WORKER_DIAG env', () => {
+        process.env.SISEARCH_WORKER_DIAG = '1';
+        assert.strictEqual(isDiagEnabled(), true);
+        process.env.SISEARCH_WORKER_DIAG = '';
+        assert.strictEqual(isDiagEnabled(), false);
+        delete process.env.SISEARCH_WORKER_DIAG;
+        assert.strictEqual(isDiagEnabled(), false);
+    });
+
+    test('appendDiag is no-op when env disabled', () => {
+        delete process.env.SISEARCH_WORKER_DIAG;
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sisearch-diag-off-'));
+        const logPath = path.join(tmp, 'should-not-exist.log');
+        appendDiag(logPath, 'worker:start', {});
+        assert.strictEqual(fs.existsSync(logPath), false, 'disabled env must not create log');
+        fs.rmSync(tmp, { recursive: true, force: true });
+    });
+
     test('formatDiagLine produces single-line JSON with required fields', () => {
         const line = formatDiagLine('file:entered', { relativePath: 'a/b.c', sizeBytes: 1024 });
         assert.ok(line.endsWith('\n'), 'must end with newline for JSONL');

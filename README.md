@@ -112,6 +112,7 @@ All settings are under the `siSearch.*` namespace in VS Code settings.
 | `siSearch.highlightBox` | `boolean` | `true` | When `true`, highlights use a border-only box style; when `false`, highlights use solid background fill. |
 | `siSearch.navigationWrap` | `boolean` | `true` | Wrap around to the first/last result when navigating past the end/beginning. |
 | `siSearch.autoSyncOnSave` | `boolean` | `false` | Automatically re-sync dirty files when saving. |
+| `siSearch.parser.maxFileSizeBytes` | `number` | `1048576` (1 MB) | Files larger than this threshold are routed to a fast regex-based streaming extractor instead of the tree-sitter AST parser. See [Large File Handling](#large-file-handling) below. Set to `0` to disable (not recommended; see warning in the setting description). |
 
 ### Example `.vscode/settings.json`
 
@@ -170,6 +171,36 @@ SI Search loads tree-sitter WASM grammars for C and C++ at runtime. For each sou
 ```
 
 Each extracted symbol records: name, kind, file path, line number, column, and the line's text content.
+
+### Large File Handling
+
+Tree-sitter runs inside a WebAssembly runtime with a hard 2 GB linear-memory ceiling. Machine-generated C/C++ headers (e.g., GPU register definitions, protocol schema headers) can be tens of megabytes and contain hundreds of thousands of `#define` directives. Parsing them through tree-sitter can exhaust the WASM heap and abort the extension host with `exit 134 / SIGABRT`.
+
+SI Search routes files by size:
+
+| File size | Path | What happens |
+|-----------|------|--------------|
+| `< maxFileSizeBytes` (default 1 MB) | **tree-sitter** | Full AST, all symbol kinds, `lineContent` preserved. |
+| `≥ maxFileSizeBytes` and `< 10 MB` | **streaming regex** | Line-by-line `readline` + regex extraction for `#define`, `struct`, `union`, `enum`, `class`, `namespace`, simple function definitions. `lineContent` is dropped to keep memory flat. |
+| `≥ 10 MB` | **streaming regex, `macrosOnly`** | Only `#define` is extracted. The seen-set for deduplication is also skipped. |
+
+**Important:** Symbols extracted by the streaming path are **counted but not added to the search index**. They are recorded in file metadata (so incremental sync knows the file was processed) but do not appear in search results.
+
+Rationale: on a 33k-file Linux kernel `drivers/` tree, the ~30 register headers that trigger the streaming path contribute roughly 4.5 million machine-generated macro names. Adding them to the main-thread `InMemorySymbolIndex` pushes heap to 2–3 GB and crashes Node's V8 runtime. The default design trades searchability of these headers for stability. Users who need to find a specific register macro can use VS Code's built-in text search (`Ctrl+Shift+F`) or `grep` on the source file.
+
+**Overriding the default:**
+- Setting `siSearch.parser.maxFileSizeBytes` to a higher value routes fewer files to the streaming path, but re-exposes you to the WASM-heap crash for any file that actually exceeds tree-sitter's capacity.
+- Setting it to `0` disables the streaming path entirely — only use this if you know your workspace has no machine-generated headers.
+
+### Diagnostic Logging
+
+When reproducing a crash, set the environment variable `SISEARCH_WORKER_DIAG=1` before launching VS Code. The parse worker will write a JSON-Lines log to `$TMPDIR/sisearch-worker-<pid>.log` with one line per file entry/read/parse event. After a crash, `tail` the latest log:
+
+```bash
+ls -t /tmp/sisearch-worker-*.log | head -1 | xargs tail -20
+```
+
+The diagnostic path is a no-op when the environment variable is unset, so production use is unaffected.
 
 ### Index Structure
 
@@ -254,6 +285,7 @@ Or in VS Code: `Ctrl+Shift+P` → `Extensions: Install from VSIX...`
 - Symbol indexing currently supports **C and C++ only**. Other languages fall back to ripgrep full-text search.
 - The hover preview renders code using the current VS Code theme via shiki. Some custom themes may not render perfectly.
 - The `.sisearch/` directory is created in the workspace root. Add it to your `.gitignore` if needed.
+- **Large machine-generated headers are not symbol-searchable.** Files above `siSearch.parser.maxFileSizeBytes` (default 1 MB) are processed through a regex-based streaming extractor whose output is recorded only in file metadata, not in the searchable index. This protects the extension host from running out of memory on workspaces like the Linux kernel `drivers/` tree where GPU register headers can contribute millions of machine-generated macros. Use VS Code's built-in text search for those files. See [Large File Handling](#large-file-handling) for the full trade-off rationale.
 
 ## License
 
