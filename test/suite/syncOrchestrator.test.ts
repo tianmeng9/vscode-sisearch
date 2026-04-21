@@ -1,12 +1,44 @@
 import * as assert from 'assert';
 import { SyncOrchestrator } from '../../src/sync/syncOrchestrator';
-import type { SymbolEntry, IndexedFile } from '../../src/index/indexTypes';
+import type { IndexedFile } from '../../src/index/indexTypes';
 import type { ParseBatchResult } from '../../src/sync/workerPool';
+import type { WriteBatch } from '../../src/index/dbBackend';
+
+interface MockDb {
+    writes: WriteBatch[];
+    checkpoints: number;
+    fileMetadata: Map<string, IndexedFile>;
+    writeBatch: (b: WriteBatch) => void;
+    getAllFileMetadata: () => Map<string, IndexedFile>;
+    checkpoint: () => void;
+}
+
+function makeDb(initialFileMeta?: Map<string, IndexedFile>): MockDb {
+    const state = {
+        writes: [] as WriteBatch[],
+        checkpoints: 0,
+        fileMetadata: initialFileMeta ?? new Map<string, IndexedFile>(),
+    };
+    return {
+        get writes() { return state.writes; },
+        get checkpoints() { return state.checkpoints; },
+        get fileMetadata() { return state.fileMetadata; },
+        writeBatch: (b: WriteBatch) => {
+            // clone to avoid callers mutating captured references
+            state.writes.push({
+                metadata: [...b.metadata],
+                symbols: [...b.symbols],
+                deletedRelativePaths: [...b.deletedRelativePaths],
+            });
+        },
+        getAllFileMetadata: () => state.fileMetadata,
+        checkpoint: () => { state.checkpoints += 1; },
+    };
+}
 
 suite('syncOrchestrator', () => {
-    test('applies deletions and worker parse results to index', async () => {
-        const updates: string[] = [];
-        const removals: string[] = [];
+    test('applies deletions and worker parse results via db.writeBatch', async () => {
+        const db = makeDb();
 
         const orchestrator = new SyncOrchestrator({
             scanFiles: async () => [{ relativePath: 'a.c', absPath: '/workspace/a.c', mtime: 10, size: 100 }],
@@ -24,22 +56,22 @@ suite('syncOrchestrator', () => {
                     onBatchComplete?.(files.length, files.length, files[files.length - 1]?.relativePath);
                 },
             },
-            index: {
-                update(file: string, symbols: unknown[]) { updates.push(`${file}:${symbols.length}`); },
-                remove(file: string) { removals.push(file); },
-                applyMetadata: () => {},
-            },
-            storage: { saveFull: async () => {} },
-            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+            db,
         });
 
         await orchestrator.synchronize({ workspaceRoot: '/workspace' });
-        assert.deepStrictEqual(removals, ['old.c']);
-        assert.deepStrictEqual(updates, ['a.c:1']);
+        // First batch must carry BOTH deletions and metadata/symbols
+        assert.strictEqual(db.writes.length, 1, 'expected a single writeBatch combining deletions + parse');
+        assert.deepStrictEqual(db.writes[0].deletedRelativePaths, ['old.c']);
+        assert.strictEqual(db.writes[0].metadata.length, 1);
+        assert.strictEqual(db.writes[0].metadata[0].relativePath, 'a.c');
+        assert.strictEqual(db.writes[0].symbols.length, 1);
+        assert.strictEqual(db.checkpoints, 1, 'checkpoint must fire exactly once when anything changed');
     });
 
     test('skips workerPool.parse when toProcess is empty', async () => {
         let parseCalled = false;
+        const db = makeDb();
 
         const orchestrator = new SyncOrchestrator({
             scanFiles: async () => [],
@@ -47,107 +79,67 @@ suite('syncOrchestrator', () => {
             workerPool: {
                 parse: async () => { parseCalled = true; },
             },
-            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
-            storage: { saveFull: async () => {} },
-            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+            db,
         });
 
         await orchestrator.synchronize({ workspaceRoot: '/workspace' });
         assert.strictEqual(parseCalled, false);
     });
 
-    test('calls storage.saveDirty with dirtyPaths when available', async () => {
-        const saveDirtyCalls: Array<{ paths: string[] }> = [];
-        const saveFullCalls: number[] = [];
-
-        const snapshot = { symbolsByFile: new Map<string, SymbolEntry[]>(), fileMetadata: new Map<string, IndexedFile>() };
-
-        const orchestrator = new SyncOrchestrator({
-            scanFiles: async () => [{ relativePath: 'new.c', absPath: '/ws/new.c', mtime: 1, size: 1 }],
-            classify: async () => ({
-                toProcess: [{ relativePath: 'new.c', absPath: '/ws/new.c', mtime: 1, size: 1 }],
-                toDelete: ['gone.c'],
-            }),
-            workerPool: {
-                parse: async (files, onBatchResult, onBatchComplete) => {
-                    await onBatchResult({
-                        symbols: [],
-                        metadata: [{ relativePath: 'new.c', mtime: 1, size: 1, symbolCount: 0 }],
-                        errors: [],
-                    });
-                    onBatchComplete?.(files.length, files.length, files[files.length - 1]?.relativePath);
-                },
-            },
-            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
-            storage: {
-                saveFull: async () => { saveFullCalls.push(1); },
-                saveDirty: async (_snap, paths) => { saveDirtyCalls.push({ paths: [...paths] }); },
-            },
-            getSnapshot: () => snapshot,
-        });
-
-        await orchestrator.synchronize({ workspaceRoot: '/ws' });
-        assert.strictEqual(saveDirtyCalls.length, 1, 'saveDirty should be called exactly once');
-        assert.strictEqual(saveFullCalls.length, 0, 'saveFull should not be called when saveDirty is available');
-        assert.ok(saveDirtyCalls[0].paths.includes('gone.c'), 'deleted path should be marked dirty');
-        assert.ok(saveDirtyCalls[0].paths.includes('new.c'), 'added path should be marked dirty');
-    });
-
-    test('falls back to saveFull when saveDirty not provided', async () => {
-        let saveFullCalled = false;
+    test('emits delete-only writeBatch when toDelete non-empty but toProcess empty', async () => {
+        const db = makeDb();
 
         const orchestrator = new SyncOrchestrator({
             scanFiles: async () => [],
-            classify: async () => ({ toProcess: [], toDelete: ['x.c'] }),
-            workerPool: {
-                parse: async () => {},
-            },
-            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
-            storage: { saveFull: async () => { saveFullCalled = true; } },
-            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+            classify: async () => ({ toProcess: [], toDelete: ['gone.c', 'also-gone.c'] }),
+            workerPool: { parse: async () => {} },
+            db,
         });
 
         await orchestrator.synchronize({ workspaceRoot: '/ws' });
-        assert.strictEqual(saveFullCalled, true);
+        assert.strictEqual(db.writes.length, 1);
+        assert.deepStrictEqual(db.writes[0].deletedRelativePaths.sort(), ['also-gone.c', 'gone.c']);
+        assert.strictEqual(db.writes[0].metadata.length, 0);
+        assert.strictEqual(db.writes[0].symbols.length, 0);
+        assert.strictEqual(db.checkpoints, 1);
     });
 
-    test('invokes index.applyMetadata with parse result before index.update', async () => {
-        const order: string[] = [];
-        const appliedMeta: IndexedFile[] = [];
+    test('does not call writeBatch or checkpoint when nothing changed', async () => {
+        const db = makeDb();
 
         const orchestrator = new SyncOrchestrator({
-            scanFiles: async () => [{ relativePath: 'x.c', absPath: '/ws/x.c', mtime: 2, size: 3 }],
-            classify: async () => ({
-                toProcess: [{ relativePath: 'x.c', absPath: '/ws/x.c', mtime: 2, size: 3 }],
-                toDelete: [],
-            }),
-            workerPool: {
-                parse: async (files, onBatchResult, onBatchComplete) => {
-                    await onBatchResult({
-                        symbols: [{ name: 'bar', kind: 'function' as const, filePath: '/ws/x.c', relativePath: 'x.c', lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '' }],
-                        metadata: [{ relativePath: 'x.c', mtime: 2, size: 3, symbolCount: 0 }],
-                        errors: [],
-                    });
-                    onBatchComplete?.(files.length, files.length, files[files.length - 1]?.relativePath);
-                },
-            },
-            index: {
-                update: () => { order.push('update'); },
-                remove: () => {},
-                applyMetadata: (meta) => { order.push('applyMetadata'); appliedMeta.push(...meta); },
-            },
-            storage: { saveFull: async () => {} },
-            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+            scanFiles: async () => [],
+            classify: async () => ({ toProcess: [], toDelete: [] }),
+            workerPool: { parse: async () => {} },
+            db,
         });
 
         await orchestrator.synchronize({ workspaceRoot: '/ws' });
-        assert.deepStrictEqual(order, ['applyMetadata', 'update'], 'applyMetadata must fire before update');
-        assert.strictEqual(appliedMeta.length, 1);
-        assert.strictEqual(appliedMeta[0].relativePath, 'x.c');
+        assert.strictEqual(db.writes.length, 0);
+        assert.strictEqual(db.checkpoints, 0);
+    });
+
+    test('reads previousFiles from db.getAllFileMetadata and passes to classify', async () => {
+        const previous = new Map<string, IndexedFile>([
+            ['old.c', { relativePath: 'old.c', mtime: 5, size: 50, symbolCount: 3 }],
+        ]);
+        const db = makeDb(previous);
+        let seenPrevious: Map<string, IndexedFile> | undefined;
+
+        const orchestrator = new SyncOrchestrator({
+            scanFiles: async () => [],
+            classify: async (input) => { seenPrevious = input.previousFiles; return { toProcess: [], toDelete: [] }; },
+            workerPool: { parse: async () => {} },
+            db,
+        });
+
+        await orchestrator.synchronize({ workspaceRoot: '/ws' });
+        assert.strictEqual(seenPrevious, previous, 'previousFiles must come from db.getAllFileMetadata()');
     });
 
     test('forwards workerPool onBatchComplete as parsing progress (regression: status bar stuck at 0/N)', async () => {
         const progressEvents: Array<{ phase: string; current: number; total: number; currentFile?: string }> = [];
+        const db = makeDb();
 
         const orchestrator = new SyncOrchestrator({
             scanFiles: async () => [
@@ -162,7 +154,6 @@ suite('syncOrchestrator', () => {
                 toDelete: [],
             }),
             workerPool: {
-                // Simulate WorkerPool firing onBatchResult + onBatchComplete after each batch.
                 parse: async (files, onBatchResult, onBatchComplete) => {
                     for (let i = 0; i < files.length; i++) {
                         const f = files[i];
@@ -175,9 +166,7 @@ suite('syncOrchestrator', () => {
                     }
                 },
             },
-            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
-            storage: { saveFull: async () => {} },
-            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+            db,
             onProgress: (phase, current, total, currentFile) => {
                 progressEvents.push({ phase, current, total, currentFile });
             },
@@ -199,33 +188,11 @@ suite('syncOrchestrator', () => {
         const lastParsing = parsingEvents[parsingEvents.length - 1];
         assert.strictEqual(lastParsing.current, 2);
     });
-
-    test('does not call storage when nothing changed', async () => {
-        let anySaveCalled = false;
-
-        const orchestrator = new SyncOrchestrator({
-            scanFiles: async () => [],
-            classify: async () => ({ toProcess: [], toDelete: [] }),
-            workerPool: {
-                parse: async () => {},
-            },
-            index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
-            storage: {
-                saveFull: async () => { anySaveCalled = true; },
-                saveDirty: async () => { anySaveCalled = true; },
-            },
-            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
-        });
-
-        await orchestrator.synchronize({ workspaceRoot: '/ws' });
-        assert.strictEqual(anySaveCalled, false);
-    });
 });
 
 suite('SyncOrchestrator streaming', () => {
     function makeDeps(overrides: any = {}): any {
-        const updates: Array<[string, number]> = [];
-        const metaApplied: Array<{ relativePath: string }> = [];
+        const db = makeDb();
         return {
             scanFiles: async () => [
                 { relativePath: 'a.c', absPath: '/w/a.c', mtime: 1, size: 1 },
@@ -233,7 +200,7 @@ suite('SyncOrchestrator streaming', () => {
             ],
             classify: async (x: any) => ({
                 toProcess: x.currentFiles,
-                toDelete: new Set<string>(),
+                toDelete: [],
             }),
             workerPool: {
                 parse: async (files: any[], onBatch: (r: ParseBatchResult) => Promise<void>) => {
@@ -250,35 +217,31 @@ suite('SyncOrchestrator streaming', () => {
                     }
                 },
             },
-            index: {
-                update: (file: string, symbols: any[]) => { updates.push([file, symbols.length]); },
-                remove: () => {},
-                applyMetadata: (m: any[]) => { for (const x of m) { metaApplied.push(x); } },
-                fileMetadata: new Map(),
-            },
-            storage: {
-                saveFull: async () => {},
-                saveDirty: async () => {},
-            },
-            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
-            _spy: { updates, metaApplied },
+            db,
             ...overrides,
         };
     }
 
-    test('update is called once per file, per batch', async () => {
+    test('writeBatch is called once per worker batch (streaming)', async () => {
         const deps = makeDeps();
         const orch = new SyncOrchestrator(deps);
         await orch.synchronize({ workspaceRoot: '/w' });
-        assert.strictEqual(deps._spy.updates.length, 2);
-        assert.deepStrictEqual(deps._spy.updates.map((u: any) => u[0]).sort(), ['a.c', 'b.c']);
+        // One writeBatch per file since the mock emits one batch per file
+        assert.strictEqual(deps.db.writes.length, 2);
+        const relPaths = deps.db.writes
+            .flatMap((w: WriteBatch) => w.metadata.map(m => m.relativePath))
+            .sort();
+        assert.deepStrictEqual(relPaths, ['a.c', 'b.c']);
     });
 
-    test('applyMetadata called per batch (not once at end)', async () => {
+    test('each writeBatch carries both metadata and symbols for its batch', async () => {
         const deps = makeDeps();
         const orch = new SyncOrchestrator(deps);
         await orch.synchronize({ workspaceRoot: '/w' });
-        assert.strictEqual(deps._spy.metaApplied.length, 2);
+        for (const w of deps.db.writes as WriteBatch[]) {
+            assert.strictEqual(w.metadata.length, 1);
+            assert.strictEqual(w.symbols.length, 1);
+        }
     });
 
     test('passes cancellationToken through to workerPool.parse', async () => {
@@ -312,16 +275,28 @@ suite('SyncOrchestrator streaming', () => {
         );
     });
 
-    test('saveDirty called at end with collected dirty paths', async () => {
-        let saveDirtyArgs: any;
+    test('checkpoint fires exactly once at end when writes happened', async () => {
+        const deps = makeDeps();
+        const orch = new SyncOrchestrator(deps);
+        await orch.synchronize({ workspaceRoot: '/w' });
+        assert.strictEqual(deps.db.checkpoints, 1);
+    });
+
+    test('first batch carries all pending deletes; subsequent batches carry none', async () => {
+        // Two files → two worker batches. Deletions must all ride on the FIRST batch.
         const deps = makeDeps({
-            storage: {
-                saveFull: async () => {},
-                saveDirty: async (_snap: any, dirty: Set<string>) => { saveDirtyArgs = [...dirty].sort(); },
-            },
+            classify: async (x: any) => ({
+                toProcess: x.currentFiles,
+                toDelete: ['old-1.c', 'old-2.c'],
+            }),
         });
         const orch = new SyncOrchestrator(deps);
         await orch.synchronize({ workspaceRoot: '/w' });
-        assert.deepStrictEqual(saveDirtyArgs, ['a.c', 'b.c']);
+        assert.strictEqual(deps.db.writes.length, 2);
+        assert.deepStrictEqual(
+            (deps.db.writes[0] as WriteBatch).deletedRelativePaths.sort(),
+            ['old-1.c', 'old-2.c'],
+        );
+        assert.deepStrictEqual((deps.db.writes[1] as WriteBatch).deletedRelativePaths, []);
     });
 });

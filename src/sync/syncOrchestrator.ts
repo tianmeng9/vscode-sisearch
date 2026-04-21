@@ -1,10 +1,10 @@
 // src/sync/syncOrchestrator.ts
-// 全量/增量 Sync 主线程调度器
+// 全量/增量 Sync 主线程调度器 —— M2.3 后 deps 只含 db: DbBackend。
 
-import type { SymbolEntry, IndexedFile } from '../index/indexTypes';
+import type { IndexedFile } from '../index/indexTypes';
 import type { FileCandidate, ClassifyResult } from './batchClassifier';
 import type { ParseBatchResult } from './workerPool';
-import { groupParseResult } from './parseResultGrouping';
+import type { DbBackend } from '../index/dbBackend';
 
 export interface SyncDeps {
     scanFiles: (workspaceRoot: string) => Promise<FileCandidate[]>;
@@ -21,31 +21,8 @@ export interface SyncDeps {
             cancelSignal?: { readonly isCancellationRequested: boolean },
         ): Promise<void>;
     };
-    index: {
-        update(file: string, symbols: SymbolEntry[]): void;
-        remove(file: string): void;
-        /** 由 worker parse 产出的 per-file 元数据;在 update() 之前调用,避免闭包 kludge */
-        applyMetadata(metadata: IndexedFile[]): void;
-        fileMetadata?: Map<string, IndexedFile>;
-    };
-    storage: {
-        saveFull(snapshot: {
-            symbolsByFile: Map<string, SymbolEntry[]>;
-            fileMetadata: Map<string, IndexedFile>;
-        }): Promise<void>;
-        saveDirty?(
-            snapshot: {
-                symbolsByFile: Map<string, SymbolEntry[]>;
-                fileMetadata: Map<string, IndexedFile>;
-            },
-            dirtyPaths: Set<string>,
-        ): Promise<void>;
-    };
-    /** 读取最新索引快照，用于驱动 storage.saveFull/saveDirty。 */
-    getSnapshot: () => {
-        symbolsByFile: Map<string, SymbolEntry[]>;
-        fileMetadata: Map<string, IndexedFile>;
-    };
+    /** 单一持久化出口:writeBatch / getAllFileMetadata / checkpoint。 */
+    db: Pick<DbBackend, 'writeBatch' | 'getAllFileMetadata' | 'checkpoint'>;
     onProgress?: (phase: string, current: number, total: number, currentFile?: string) => void;
 }
 
@@ -66,17 +43,13 @@ export class SyncOrchestrator {
         if (cancellationToken?.isCancellationRequested) { return; }
 
         this.deps.onProgress?.('classifying', 0, currentFiles.length);
-        const previousFiles = this.deps.index.fileMetadata ?? new Map<string, IndexedFile>();
+        const previousFiles = this.deps.db.getAllFileMetadata();
         const classified = await this.deps.classify({ workspaceRoot, currentFiles, previousFiles });
 
-        // Track paths that changed this run — drives saveDirty
-        const dirtyPaths = new Set<string>();
-
-        // Apply deletions
-        for (const relativePath of classified.toDelete) {
-            this.deps.index.remove(relativePath);
-            dirtyPaths.add(relativePath);
-        }
+        // 待写入的删除列表:第一批 writeBatch 把它们全部带走(并清空),后续批次只有 metadata/symbols。
+        const pendingDeletes: string[] = [...classified.toDelete];
+        // 是否本轮有任何 DB 变更 —— 决定末尾是否 checkpoint。
+        let hadWrite = pendingDeletes.length > 0;
 
         if (cancellationToken?.isCancellationRequested) { return; }
 
@@ -85,13 +58,14 @@ export class SyncOrchestrator {
             this.deps.onProgress?.('parsing', 0, classified.toProcess.length);
             await this.deps.workerPool.parse(
                 classified.toProcess.map(f => ({ absPath: f.absPath, relativePath: f.relativePath })),
-                async (batch) => {
-                    const grouped = groupParseResult(batch);
-                    this.deps.index.applyMetadata(batch.metadata);
-                    for (const [file, symbols] of grouped) {
-                        this.deps.index.update(file, symbols);
-                        dirtyPaths.add(file);
-                    }
+                async (batch: ParseBatchResult) => {
+                    const deletes = pendingDeletes.splice(0);
+                    this.deps.db.writeBatch({
+                        metadata: batch.metadata,
+                        symbols: batch.symbols,
+                        deletedRelativePaths: deletes,
+                    });
+                    hadWrite = true;
                 },
                 (done, total, lastFile) => {
                     this.deps.onProgress?.('parsing', done, total, lastFile);
@@ -104,15 +78,20 @@ export class SyncOrchestrator {
 
         if (cancellationToken?.isCancellationRequested) { return; }
 
-        // Persist to storage — incremental if possible
-        if (dirtyPaths.size > 0) {
-            this.deps.onProgress?.('saving', 0, dirtyPaths.size);
-            const snapshot = this.deps.getSnapshot();
-            if (this.deps.storage.saveDirty) {
-                await this.deps.storage.saveDirty(snapshot, dirtyPaths);
-            } else {
-                await this.deps.storage.saveFull(snapshot);
-            }
+        // 如果解析阶段没有任何批次(e.g. toProcess 空但 toDelete 非空),单独下发 delete-only 批。
+        if (pendingDeletes.length > 0) {
+            this.deps.db.writeBatch({
+                metadata: [],
+                symbols: [],
+                deletedRelativePaths: pendingDeletes.splice(0),
+            });
+            hadWrite = true;
+        }
+
+        // Persist —— DbBackend 事务已随 writeBatch 落盘,这里只需一次 WAL checkpoint 收尾。
+        if (hadWrite) {
+            this.deps.onProgress?.('saving', 0, 1);
+            this.deps.db.checkpoint();
         } else {
             this.deps.onProgress?.('saving', 0, 0);
         }

@@ -19,7 +19,6 @@ import type { FileCandidate } from './sync/batchClassifier';
 import { classifyBatches } from './sync/batchClassifier';
 import type { WorkerPool, ParseBatchResult } from './sync/workerPool';
 import { SyncOrchestrator, type SyncDeps as SyncOrchestratorDeps } from './sync/syncOrchestrator';
-import { groupParseResult } from './sync/parseResultGrouping';
 import { createReentrancyGuard } from './sync/reentrancyGuard';
 
 export interface SymbolIndexDeps {
@@ -142,9 +141,6 @@ export class SymbolIndex {
         this.setStatus('building');
 
         const db = this.getOrCreateDb(workspaceRoot);
-        // M2.3 会把 SyncOrchestratorDeps 改成 { db } —— 此处构造的 deps 满足当前旧接口形状,
-        // 但 index/storage/getSnapshot 是 no-op 占位。M2.3 task 会把 orchestrator 改成
-        // 直接 db.writeBatch,届时一起清掉这些占位字段。
         const deps: SyncOrchestratorDeps = {
             scanFiles: async (root: string) => this.scanWorkspace(root, extensions, excludePatterns, includePaths, token),
             classify: async (input) => classifyBatches(input),
@@ -161,21 +157,7 @@ export class SymbolIndex {
                     }
                 },
             },
-            // 占位:M2.3 task 会把 SyncOrchestratorDeps 改成只含 db,此处也一起清理。
-            index: {
-                update: (_file: string, _symbols: SymbolEntry[]) => { /* no-op; M2.3 routes to db.writeBatch */ },
-                remove: (_file: string) => { /* no-op; M2.3 routes to db.writeBatch */ },
-                applyMetadata: (_metadata: IndexedFile[]) => { /* no-op; M2.3 routes to db.writeBatch */ },
-                fileMetadata: db.getAllFileMetadata(),
-            },
-            storage: {
-                saveFull: async () => { /* no-op; DbBackend transactions already persist */ },
-                saveDirty: async () => { /* no-op; DbBackend transactions already persist */ },
-            },
-            getSnapshot: () => ({
-                symbolsByFile: new Map<string, SymbolEntry[]>(),
-                fileMetadata: db.getAllFileMetadata(),
-            }),
+            db,
             onProgress: (phase: string, current: number, total: number, currentFile?: string) => {
                 onProgress?.({ phase: phase as SyncProgress['phase'], current, total, currentFile });
             },
@@ -356,11 +338,6 @@ export class SymbolIndex {
         }
         return this.parseInProcess(files, workspaceRoot, onBatchComplete);
     }
-
-    // groupParseResult 用于 parse 聚合时按 relativePath 分组。目前 syncDirty 直接把 batch
-    // 丢给 db.writeBatch,由 DbBackend 内部 upsert。保留 import 以备后续扩展。
-    // (无 @ts-expect-error 是因为 groupParseResult 未再被调用——编译器不报错因为它是纯 import。)
-    private _unusedGroupImport = groupParseResult;
 
     private async scanWorkspace(
         workspaceRoot: string,

@@ -37,13 +37,11 @@ async function main(): Promise<void> {
                 });
             },
         },
-        index: {
-            update: () => {},
-            remove: () => {},
-            applyMetadata: () => {},
+        db: {
+            writeBatch: () => {},
+            getAllFileMetadata: () => new Map(),
+            checkpoint: () => {},
         },
-        storage: { saveFull: async () => {} },
-        getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
     });
 
     const start = performance.now();
