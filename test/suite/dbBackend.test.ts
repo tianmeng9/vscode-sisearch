@@ -45,3 +45,90 @@ suite('DbBackend lifecycle', () => {
         assert.doesNotThrow(() => db.close());
     });
 });
+
+suite('DbBackend writeBatch', () => {
+    function fresh(): DbBackend {
+        const db = new DbBackend(':memory:');
+        db.openOrInit();
+        return db;
+    }
+
+    test('inserts metadata and symbols; stats reflect counts', () => {
+        const db = fresh();
+        db.writeBatch({
+            metadata: [{ relativePath: 'a.c', mtime: 1, size: 100, symbolCount: 2 }],
+            symbols: [
+                { name: 'foo', kind: 'function', filePath: '/a.c', relativePath: 'a.c',
+                  lineNumber: 10, endLineNumber: 10, column: 4, lineContent: 'int foo() {' },
+                { name: 'bar', kind: 'macro', filePath: '/a.c', relativePath: 'a.c',
+                  lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '#define bar 1' },
+            ],
+            deletedRelativePaths: [],
+        });
+        assert.deepStrictEqual(db.getStats(), { files: 1, symbols: 2 });
+    });
+
+    test('upsert: re-writing metadata for same file overwrites', () => {
+        const db = fresh();
+        db.writeBatch({
+            metadata: [{ relativePath: 'a.c', mtime: 1, size: 100, symbolCount: 0 }],
+            symbols: [],
+            deletedRelativePaths: [],
+        });
+        db.writeBatch({
+            metadata: [{ relativePath: 'a.c', mtime: 2, size: 200, symbolCount: 0 }],
+            symbols: [],
+            deletedRelativePaths: [],
+        });
+        const meta = db.getFileMetadata('a.c');
+        assert.strictEqual(meta?.mtime, 2);
+        assert.strictEqual(meta?.size, 200);
+    });
+
+    test('ON DELETE CASCADE removes symbols when file deleted', () => {
+        const db = fresh();
+        db.writeBatch({
+            metadata: [{ relativePath: 'a.c', mtime: 1, size: 100, symbolCount: 1 }],
+            symbols: [{ name: 'foo', kind: 'function', filePath: '/a.c', relativePath: 'a.c',
+                        lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '' }],
+            deletedRelativePaths: [],
+        });
+        assert.strictEqual(db.getStats().symbols, 1);
+        db.writeBatch({ metadata: [], symbols: [], deletedRelativePaths: ['a.c'] });
+        assert.strictEqual(db.getStats().symbols, 0);
+        assert.strictEqual(db.getStats().files, 0);
+    });
+
+    test('re-parse same file: old symbols cleared before new inserted', () => {
+        const db = fresh();
+        db.writeBatch({
+            metadata: [{ relativePath: 'a.c', mtime: 1, size: 100, symbolCount: 1 }],
+            symbols: [{ name: 'old_sym', kind: 'function', filePath: '/a.c', relativePath: 'a.c',
+                        lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '' }],
+            deletedRelativePaths: [],
+        });
+        db.writeBatch({
+            metadata: [{ relativePath: 'a.c', mtime: 2, size: 100, symbolCount: 1 }],
+            symbols: [{ name: 'new_sym', kind: 'function', filePath: '/a.c', relativePath: 'a.c',
+                        lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '' }],
+            deletedRelativePaths: [],
+        });
+        // 旧符号 old_sym 必须消失
+        assert.strictEqual(db.getStats().symbols, 1);
+    });
+
+    test('writes are atomic: throw mid-batch rolls back', () => {
+        const db = fresh();
+        assert.throws(() => {
+            db.writeBatch({
+                metadata: [{ relativePath: 'a.c', mtime: 1, size: 100, symbolCount: 0 }],
+                // name null 违反 NOT NULL,应回滚
+                symbols: [{ name: null as any, kind: 'function', filePath: '/a', relativePath: 'a.c',
+                            lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '' }],
+                deletedRelativePaths: [],
+            });
+        });
+        // files 表应为空(事务回滚)
+        assert.strictEqual(db.getStats().files, 0);
+    });
+});
