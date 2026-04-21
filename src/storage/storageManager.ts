@@ -3,7 +3,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { decodeMessagePack, encodeMessagePack } from './codec';
+import { decodeMessagePackMulti, encodeMessagePack } from './codec';
 import { shardFileName, shardForPath } from './shardStrategy';
 import type { SymbolEntry, IndexedFile } from '../index/indexTypes';
 
@@ -111,20 +111,43 @@ export class StorageManager {
 
         for (let i = 0; i < this.options.shardCount; i++) {
             const filePath = path.join(this.shardsDir, shardFileName(i));
-            if (!fs.existsSync(filePath)) {
-                continue;
-            }
-            try {
-                const entries = decodeMessagePack<ShardEntry[]>(fs.readFileSync(filePath));
-                for (const entry of entries) {
-                    symbolsByFile.set(entry.relativePath, entry.symbols);
-                    fileMetadata.set(entry.relativePath, entry.metadata);
-                }
-            } catch {
-                // Corrupt shard — skip
-            }
+            if (!fs.existsSync(filePath)) { continue; }
+            this.readShardTolerant(filePath, symbolsByFile, fileMetadata);
         }
 
         return { symbolsByFile, fileMetadata };
+    }
+
+    private readShardTolerant(
+        filePath: string,
+        symbolsByFile: Map<string, SymbolEntry[]>,
+        fileMetadata: Map<string, IndexedFile>,
+    ): void {
+        let buf: Buffer;
+        try {
+            buf = fs.readFileSync(filePath);
+        } catch {
+            return;
+        }
+        const iter = decodeMessagePackMulti<ShardEntry[]>(buf);
+        while (true) {
+            let result: IteratorResult<ShardEntry[]>;
+            try {
+                result = iter.next();
+            } catch {
+                // decoder choked on bad bytes (truncated tail or garbage) — stop, keep what we have
+                return;
+            }
+            if (result.done) { return; }
+            if (!Array.isArray(result.value)) {
+                // Unexpected top-level shape (e.g. corrupt bytes that happened to msgpack-decode
+                // to a scalar) — stop here rather than partially ingest nonsense.
+                return;
+            }
+            for (const entry of result.value) {
+                symbolsByFile.set(entry.relativePath, entry.symbols);
+                fileMetadata.set(entry.relativePath, entry.metadata);
+            }
+        }
     }
 }
