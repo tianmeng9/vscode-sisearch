@@ -181,7 +181,8 @@ CREATE TRIGGER symbols_fts_insert AFTER INSERT ON symbols BEGIN
     INSERT INTO symbols_fts(rowid, name) VALUES (NEW.id, NEW.name);
 END;
 CREATE TRIGGER symbols_fts_delete AFTER DELETE ON symbols BEGIN
-    DELETE FROM symbols_fts WHERE rowid = OLD.id;
+    -- contentless FTS5 要用特殊 INSERT 语法删除倒排项,不能用 DELETE FROM
+    INSERT INTO symbols_fts(symbols_fts, rowid, name) VALUES ('delete', OLD.id, OLD.name);
 END;
 ```
 
