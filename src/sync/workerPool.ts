@@ -34,6 +34,12 @@ export interface WorkerPoolOptions {
 /** 每批完成的回调。done = 已完成文件数（累计）, total = 总文件数, lastFile = 本批最后一个文件的 relativePath。 */
 export type OnBatchComplete = (done: number, total: number, lastFile?: string) => void;
 
+/** 协作式取消信号。与 vscode.CancellationToken 结构兼容（只用 isCancellationRequested 字段），
+ *  测试里直接传 `{ isCancellationRequested: boolean }` 即可,不需要真实 vscode 依赖。 */
+export interface CancelSignal {
+    readonly isCancellationRequested: boolean;
+}
+
 export class WorkerPool {
     private workersPromise: Promise<PoolWorker[]>;
     private batchSize: number;
@@ -49,8 +55,10 @@ export class WorkerPool {
         files: Array<{ absPath: string; relativePath: string }>,
         onBatchResult: (result: ParseBatchResult) => Promise<void>,
         onBatchComplete?: OnBatchComplete,
+        cancelSignal?: CancelSignal,
     ): Promise<void> {
         if (files.length === 0) { return; }
+        if (cancelSignal?.isCancellationRequested) { return; }
 
         const workers = await this.workersPromise;
         if (workers.length === 0) { return; }
@@ -63,6 +71,8 @@ export class WorkerPool {
 
         const workerLoop = async (worker: PoolWorker): Promise<void> => {
             while (true) {
+                // Cancellation check at head — exit before claiming more work.
+                if (cancelSignal?.isCancellationRequested) { return; }
                 if (cursor >= total) { return; }
                 const start = cursor;
                 const end = Math.min(start + batchSize, total);
@@ -70,6 +80,10 @@ export class WorkerPool {
 
                 const batch = files.slice(start, end);
                 const result = await worker.parseBatch(batch);
+
+                // Re-check after the long await — avoid invoking onBatchResult
+                // (which may do disk I/O) after the caller asked us to stop.
+                if (cancelSignal?.isCancellationRequested) { return; }
 
                 // Back-pressure: the next worker step only proceeds once the
                 // caller has consumed this batch. Errors propagate to Promise.all.

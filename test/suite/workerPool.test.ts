@@ -111,4 +111,59 @@ suite('workerPool', () => {
         assert.deepStrictEqual(seen[0].errors, ['a.c: parse error']);
         await pool.dispose();
     });
+
+    test('cancellation token stops parse mid-stream', async () => {
+        // Regression: cancel during a long sync left orchestrator blocked on
+        // workerPool.parse(), so the UI "cancel" button did not actually stop work.
+        // After fix: token.isCancellationRequested causes workerLoop to exit
+        // promptly, and parse() resolves without processing remaining files.
+        const cancelAfter = 2;
+        const pool = new WorkerPool({
+            size: 1,
+            workerFactory: async () => makeStubWorker(),
+            batchSize: 1,
+        });
+        const files = Array.from({ length: 10 }, (_, i) => ({
+            absPath: `/w/f${i}.c`, relativePath: `f${i}.c`,
+        }));
+
+        const token = { isCancellationRequested: false };
+        let seenBatches = 0;
+        await pool.parse(
+            files,
+            async () => {
+                seenBatches++;
+                if (seenBatches >= cancelAfter) { token.isCancellationRequested = true; }
+            },
+            undefined,
+            token,
+        );
+        assert.ok(
+            seenBatches <= cancelAfter + 1,
+            `expected parse to stop shortly after cancel (saw ${seenBatches} batches of ${files.length})`,
+        );
+        assert.ok(seenBatches < files.length, 'parse must not process all files after cancel');
+        await pool.dispose();
+    });
+
+    test('pre-cancelled token skips parse entirely', async () => {
+        const pool = new WorkerPool({
+            size: 2,
+            workerFactory: async () => makeStubWorker(),
+            batchSize: 1,
+        });
+        const files = [
+            { absPath: '/w/a.c', relativePath: 'a.c' },
+            { absPath: '/w/b.c', relativePath: 'b.c' },
+        ];
+        let seen = 0;
+        await pool.parse(
+            files,
+            async () => { seen++; },
+            undefined,
+            { isCancellationRequested: true },
+        );
+        assert.strictEqual(seen, 0, 'no batches should be processed when token is already cancelled');
+        await pool.dispose();
+    });
 });
