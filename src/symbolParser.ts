@@ -13,6 +13,15 @@ let langC: any = null;
 let langCpp: any = null;
 let queryC: any = null;
 let queryCpp: any = null;
+// 每语言一个持久 Parser。per-file `new ParserClass()` 会让 web-tree-sitter 的
+// WASM malloc/free 持续累积碎片，33k 文件规模会让 `parser.parse()` 里的 tree
+// alloc 最终失败，V8 作为 abort 触发 extension host exit 134（Crashpad
+// "last resort; GC in old space requested" 签名）。Parser 可反复 `parse()`，
+// 只要释放返回的 Tree；切语言用 setLanguage，代价极低。
+let parserC: any = null;
+let parserCpp: any = null;
+// 测试钩子：统计 Parser 构造次数。生产路径不读。
+let parsersCreatedCount = 0;
 
 const C_EXTENSIONS = new Set(['.c', '.h']);
 const CPP_EXTENSIONS = new Set(['.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl']);
@@ -75,31 +84,39 @@ export async function initParser(extensionPath: string): Promise<void> {
     queryC = createQuery(langC, QUERY_SOURCE_C);
     queryCpp = createQuery(langCpp, QUERY_SOURCE_CPP);
 
+    // 持久 Parser：每语言一个，整个 worker 生命周期复用。
+    parserC = new ParserClass();
+    parserC.setLanguage(langC);
+    parsersCreatedCount++;
+
+    parserCpp = new ParserClass();
+    parserCpp.setLanguage(langCpp);
+    parsersCreatedCount++;
+
     parserReady = true;
 }
 
 export function parseSymbols(filePath: string, relativePath: string, content: string): SymbolEntry[] {
-    if (!parserReady || !langC || !langCpp || !TreeSitter) { return []; }
+    if (!parserReady || !parserC || !parserCpp || !TreeSitter) { return []; }
 
     const ext = path.extname(filePath).toLowerCase();
-    let lang: any;
+    let parser: any;
     let query: any;
 
     if (C_EXTENSIONS.has(ext)) {
-        lang = langC;
+        parser = parserC;
         query = queryC;
     } else if (CPP_EXTENSIONS.has(ext)) {
-        lang = langCpp;
+        parser = parserCpp;
         query = queryCpp;
     } else {
         return [];
     }
 
-    const parser = new ParserClass();
-    parser.setLanguage(lang);
+    // 复用持久 Parser。tree 一定要 delete() —— 不 delete 会让 WASM 堆
+    // 永久膨胀；但 parser 不能 delete，它要服务下一个文件。
     const tree = parser.parse(content);
     if (!tree) {
-        parser.delete();
         return [];
     }
 
@@ -133,11 +150,15 @@ export function parseSymbols(filePath: string, relativePath: string, content: st
     }
 
     tree.delete();
-    parser.delete();
+    // parser 不 delete：见 parserC/parserCpp 的注释。
     return symbols;
 }
 
 export function disposeParser(): void {
+    parserC?.delete();
+    parserCpp?.delete();
+    parserC = null;
+    parserCpp = null;
     queryC?.delete();
     queryCpp?.delete();
     queryC = null;
@@ -145,5 +166,11 @@ export function disposeParser(): void {
     langC = null;
     langCpp = null;
     TreeSitter = null;
+    ParserClass = null;
     parserReady = false;
+}
+
+/** @internal 测试钩子：返回至今为止创建过的 Parser 实例数（initParser +2，其它为 0）。 */
+export function _getParserStatsForTest(): { parsersCreated: number } {
+    return { parsersCreated: parsersCreatedCount };
 }
