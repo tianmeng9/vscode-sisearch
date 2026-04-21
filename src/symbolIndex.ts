@@ -1,6 +1,6 @@
 // src/symbolIndex.ts
-// Façade：保留历史公开 API，但内部委托给 InMemorySymbolIndex + StorageManager + SyncOrchestrator。
-// 所有持久化走 MessagePack 分片（StorageManager），解析走 WorkerPool。
+// Façade：保留历史公开 API，但内部从 InMemorySymbolIndex + StorageManager 换成 DbBackend。
+// 每次 writeBatch 在 SQLite 事务内落盘,saveToDisk 变 no-op;搜索走 FTS5,行内容按需从源文件读。
 
 import * as vscode from 'vscode';
 import * as path from 'path';
@@ -13,37 +13,37 @@ import {
     SyncProgress,
     SymbolEntry,
 } from './types';
-import { InMemorySymbolIndex } from './index/symbolIndex';
-import { StorageManager } from './storage/storageManager';
+import { DbBackend } from './index/dbBackend';
+import { LineContentReader } from './index/lineContentReader';
 import type { FileCandidate } from './sync/batchClassifier';
 import { classifyBatches } from './sync/batchClassifier';
 import type { WorkerPool, ParseBatchResult } from './sync/workerPool';
-import { SyncOrchestrator } from './sync/syncOrchestrator';
+import { SyncOrchestrator, type SyncDeps as SyncOrchestratorDeps } from './sync/syncOrchestrator';
 import { groupParseResult } from './sync/parseResultGrouping';
 import { createReentrancyGuard } from './sync/reentrancyGuard';
-
-const DEFAULT_SHARD_COUNT = 16;
 
 export interface SymbolIndexDeps {
     /** 可选注入 WorkerPool；未提供时 façade 回退为同步解析（测试用）。 */
     workerPool?: WorkerPool;
-    shardCount?: number;
+    /** 测试钩子:覆盖 DbBackend 文件路径(传 ':memory:' 可走内存 DB)。 */
+    dbPath?: string;
 }
 
 export class SymbolIndex {
-    private readonly inner = new InMemorySymbolIndex();
-    private readonly fileMetadata = new Map<string, IndexedFile>();
     private readonly dirtyFiles = new Set<string>();
     private readonly deletedFiles = new Set<string>();
     private _status: IndexStatus = 'none';
-    private readonly shardCount: number;
     private workerPool: WorkerPool | undefined;
-    // 单并发 synchronize 闸门：cancel-then-resync 会并行两条 pipeline 共享 workerPool/index,
+    // 单并发 synchronize 闸门：cancel-then-resync 会并行两条 pipeline 共享 workerPool,
     // 33k 文件级别直接把 VS Code 打崩。详见 src/sync/reentrancyGuard.ts。
     private readonly syncGuard = createReentrancyGuard();
-    // StorageManager 按 workspaceRoot 记忆化 —— 避免每次 sync/save/load 重新 new
-    private readonly storageByRoot = new Map<string, StorageManager>();
-    // S8: canonicalizeRoot 结果缓存 —— 避免每次 getStorage/clearDisk 都走 realpathSync syscall
+    // DbBackend 按 canonical workspaceRoot 记忆化。
+    private readonly dbByRoot = new Map<string, DbBackend>();
+    // 搜索命中后按需读取行内容的 LRU cache。
+    private readonly lineReader = new LineContentReader();
+    // 测试注入:覆盖 DbBackend 文件路径(如 ':memory:')。
+    private readonly dbPathOverride: string | undefined;
+    // S8: canonicalizeRoot 结果缓存 —— 避免每次都走 realpathSync syscall
     private readonly canonicalByInput = new Map<string, string>();
     // P7.3: 状态机事件化，替代 composition 层 2s 轮询
     private readonly _onStatusChanged = new vscode.EventEmitter<IndexStatus>();
@@ -51,7 +51,7 @@ export class SymbolIndex {
 
     constructor(deps: SymbolIndexDeps = {}) {
         this.workerPool = deps.workerPool;
-        this.shardCount = deps.shardCount ?? DEFAULT_SHARD_COUNT;
+        this.dbPathOverride = deps.dbPath;
     }
 
     get status(): IndexStatus { return this._status; }
@@ -64,6 +64,10 @@ export class SymbolIndex {
 
     /** 释放 EventEmitter;由 composition 层在 ExtensionContext.subscriptions 中登记。 */
     dispose(): void {
+        for (const db of this.dbByRoot.values()) {
+            try { db.close(); } catch { /* ignore */ }
+        }
+        this.dbByRoot.clear();
         this._onStatusChanged.dispose();
         this._onStatsChanged.dispose();
     }
@@ -71,8 +75,11 @@ export class SymbolIndex {
     /** @internal 测试钩子——不得用于生产代码路径。走 setStatus 以保持事件对称。 */
     _setStatusForTest(next: IndexStatus): void { this.setStatus(next); }
 
-    /** @internal 测试钩子:暴露 storageByRoot 大小,用于验证路径标准化。 */
-    _getStorageCountForTest(): number { return this.storageByRoot.size; }
+    /** @internal 测试钩子:暴露 dbByRoot 大小,用于验证路径标准化。 */
+    _getStorageCountForTest(): number { return this.dbByRoot.size; }
+
+    /** 公开查询:sync 是否正在进行。供搜索路径决定是否走 fallback。 */
+    isSyncInProgress(): boolean { return this.syncGuard.isRunning(); }
 
     /** P7.3: 所有 this._status = X 赋值都走这里,带相等守卫,仅在状态确实变化时 fire。 */
     private setStatus(next: IndexStatus): void {
@@ -83,11 +90,14 @@ export class SymbolIndex {
 
     /** P7.3: 在批处理完成末尾调用,fire 当前 stats 快照。 */
     private emitStats(): void {
-        this._onStatsChanged.fire(this.inner.getStats());
+        this._onStatsChanged.fire(this.getStats());
     }
 
     getStats(): { files: number; symbols: number } {
-        return this.inner.getStats();
+        for (const db of this.dbByRoot.values()) {
+            try { return db.getStats(); } catch { /* fall through */ }
+        }
+        return { files: 0, symbols: 0 };
     }
 
     markDirty(relativePath: string): void {
@@ -131,9 +141,12 @@ export class SymbolIndex {
     ): Promise<void> {
         this.setStatus('building');
 
-        const storage = this.getStorage(workspaceRoot);
-        const orchestrator = new SyncOrchestrator({
-            scanFiles: async (root) => this.scanWorkspace(root, extensions, excludePatterns, includePaths, token),
+        const db = this.getOrCreateDb(workspaceRoot);
+        // M2.3 会把 SyncOrchestratorDeps 改成 { db } —— 此处构造的 deps 满足当前旧接口形状,
+        // 但 index/storage/getSnapshot 是 no-op 占位。M2.3 task 会把 orchestrator 改成
+        // 直接 db.writeBatch,届时一起清掉这些占位字段。
+        const deps: SyncOrchestratorDeps = {
+            scanFiles: async (root: string) => this.scanWorkspace(root, extensions, excludePatterns, includePaths, token),
             classify: async (input) => classifyBatches(input),
             workerPool: {
                 parse: async (files, onBatchResult, onBatchComplete, cancelSignal) => {
@@ -148,27 +161,26 @@ export class SymbolIndex {
                     }
                 },
             },
+            // 占位:M2.3 task 会把 SyncOrchestratorDeps 改成只含 db,此处也一起清理。
             index: {
-                update: (file, symbols) => this.inner.update(file, symbols),
-                remove: file => {
-                    this.inner.remove(file);
-                    this.fileMetadata.delete(file);
-                },
-                applyMetadata: (metadata) => this.applyMetadataToCache(metadata),
-                fileMetadata: this.fileMetadata,
+                update: (_file: string, _symbols: SymbolEntry[]) => { /* no-op; M2.3 routes to db.writeBatch */ },
+                remove: (_file: string) => { /* no-op; M2.3 routes to db.writeBatch */ },
+                applyMetadata: (_metadata: IndexedFile[]) => { /* no-op; M2.3 routes to db.writeBatch */ },
+                fileMetadata: db.getAllFileMetadata(),
             },
             storage: {
-                saveFull: snapshot => storage.saveFull(snapshot),
-                saveDirty: (snapshot, dirty) => storage.saveDirty(snapshot, dirty),
+                saveFull: async () => { /* no-op; DbBackend transactions already persist */ },
+                saveDirty: async () => { /* no-op; DbBackend transactions already persist */ },
             },
             getSnapshot: () => ({
-                symbolsByFile: this.inner.snapshot(),
-                fileMetadata: new Map(this.fileMetadata),
+                symbolsByFile: new Map<string, SymbolEntry[]>(),
+                fileMetadata: db.getAllFileMetadata(),
             }),
-            onProgress: (phase, current, total, currentFile) => {
+            onProgress: (phase: string, current: number, total: number, currentFile?: string) => {
                 onProgress?.({ phase: phase as SyncProgress['phase'], current, total, currentFile });
             },
-        });
+        };
+        const orchestrator = new SyncOrchestrator(deps);
 
         await orchestrator.synchronize({
             workspaceRoot,
@@ -178,7 +190,7 @@ export class SymbolIndex {
         this.dirtyFiles.clear();
         this.deletedFiles.clear();
         if (token.isCancellationRequested) {
-            const fallback = this.inner.getStats().files > 0 ? 'stale' : 'none';
+            const fallback = this.getStats().files > 0 ? 'stale' : 'none';
             this.setStatus(fallback);
             this.emitStats();
             return;
@@ -190,61 +202,80 @@ export class SymbolIndex {
     async syncDirty(workspaceRoot: string): Promise<void> {
         if (this.dirtyFiles.size === 0 && this.deletedFiles.size === 0) { return; }
 
-        const storage = this.getStorage(workspaceRoot);
-        const dirtyPaths = new Set<string>([...this.dirtyFiles, ...this.deletedFiles]);
-
-        for (const rel of this.deletedFiles) {
-            this.inner.remove(rel);
-            this.fileMetadata.delete(rel);
-        }
+        const db = this.getOrCreateDb(workspaceRoot);
+        const deletedPaths = [...this.deletedFiles];
         this.deletedFiles.clear();
 
+        let parseResult: ParseBatchResult | undefined;
         if (this.dirtyFiles.size > 0) {
             const files = [...this.dirtyFiles].map(rel => ({
                 absPath: path.resolve(workspaceRoot, rel),
                 relativePath: rel,
             }));
-
-            const result = await this.runParse(files, workspaceRoot);
-            this.applyParseResult(result);
+            parseResult = await this.runParse(files, workspaceRoot);
         }
         this.dirtyFiles.clear();
 
-        await storage.saveDirty(
-            { symbolsByFile: this.inner.snapshot(), fileMetadata: new Map(this.fileMetadata) },
-            dirtyPaths,
-        );
+        db.writeBatch({
+            metadata: parseResult?.metadata ?? [],
+            symbols: parseResult?.symbols ?? [],
+            deletedRelativePaths: deletedPaths,
+        });
+        db.checkpoint();
 
         if (this._status === 'stale') { this.setStatus('ready'); }
         this.emitStats();
     }
 
-    searchSymbols(query: string, workspaceRoot: string, options: SearchOptions): SearchResult[] {
+    searchSymbols(
+        query: string,
+        workspaceRoot: string,
+        options: SearchOptions,
+        pagination?: { limit: number; offset: number },
+    ): SearchResult[] {
         if (this._status !== 'ready' && this._status !== 'stale') { return []; }
-        return this.inner.search(query, workspaceRoot, options);
-    }
-
-    async saveToDisk(workspaceRoot: string): Promise<void> {
-        await this.getStorage(workspaceRoot).saveFull({
-            symbolsByFile: this.inner.snapshot(),
-            fileMetadata: new Map(this.fileMetadata),
+        const db = this.getOrCreateDb(workspaceRoot);
+        const canonical = this.canonicalizeRoot(workspaceRoot);
+        const rawResults = db.search(query, options, pagination);
+        return rawResults.map(r => {
+            const abs = path.join(canonical, r.relativePath);
+            const line = this.lineReader.read(abs, r.lineNumber);
+            return {
+                ...r,
+                filePath: abs,
+                lineContent: line,
+                // 近似 matchStart/matchLength —— searchEngine 侧会基于 query 再算,M4 纠正。
+                matchStart: 0,
+                matchLength: r.matchLength,
+            };
         });
     }
 
+    async saveToDisk(_workspaceRoot: string): Promise<void> {
+        // no-op: DbBackend 事务已经把每个 writeBatch 落盘;保留方法签名供 commands.ts 等老调用点。
+    }
+
     async loadFromDisk(workspaceRoot: string): Promise<boolean> {
-        const snap = await this.getStorage(workspaceRoot).load();
-        if (snap.symbolsByFile.size === 0 && snap.fileMetadata.size === 0) { return false; }
-        this.inner.replaceAll(snap.symbolsByFile);
-        this.fileMetadata.clear();
-        for (const [k, v] of snap.fileMetadata) { this.fileMetadata.set(k, v); }
-        this.setStatus('ready');
-        this.emitStats();
-        return true;
+        try {
+            const db = this.getOrCreateDb(workspaceRoot);
+            const stats = db.getStats();
+            if (stats.files > 0) {
+                this.setStatus('ready');
+                this.emitStats();
+                return true;
+            }
+            this.setStatus('none');
+            return false;
+        } catch {
+            this.setStatus('none');
+            return false;
+        }
     }
 
     clear(): void {
-        this.inner.replaceAll(new Map());
-        this.fileMetadata.clear();
+        for (const db of this.dbByRoot.values()) {
+            try { db.clearAll(); } catch { /* ignore */ }
+        }
         this.dirtyFiles.clear();
         this.deletedFiles.clear();
         this.setStatus('none');
@@ -253,14 +284,15 @@ export class SymbolIndex {
 
     clearDisk(workspaceRoot: string): void {
         const canonical = this.canonicalizeRoot(workspaceRoot);
-        const indexDir = path.join(canonical, '.sisearch');
-        try {
-            fs.rmSync(indexDir, { recursive: true, force: true });
-        } catch {
-            // ignore
+        const existing = this.dbByRoot.get(canonical);
+        if (existing) {
+            try { existing.close(); } catch { /* ignore */ }
+            this.dbByRoot.delete(canonical);
         }
-        // 失效缓存,避免过时 StorageManager/canonical 指向已删目录
-        this.storageByRoot.delete(canonical);
+        const p = path.join(canonical, '.sisearch', 'index.sqlite');
+        for (const suffix of ['', '-wal', '-shm']) {
+            try { fs.unlinkSync(p + suffix); } catch { /* ignore */ }
+        }
         // S8: 清掉所有映射到该 canonical 的输入缓存项
         for (const [input, canon] of this.canonicalByInput) {
             if (canon === canonical) { this.canonicalByInput.delete(input); }
@@ -287,16 +319,18 @@ export class SymbolIndex {
         return canonical;
     }
 
-    /** 按 workspaceRoot 记忆化 StorageManager,避免每次 sync/save/load 都重复 new。
-     *  路径标准化:`/a/b`、`/a/b/`、以及 symlink 不同入口都归一到同一 key,防止重复实例化。 */
-    private getStorage(workspaceRoot: string): StorageManager {
+    /** 按 canonical workspaceRoot 记忆化 DbBackend;首次访问时 openOrInit。
+     *  测试场景下 dbPathOverride(例如 ':memory:') 覆盖默认的 .sisearch/index.sqlite。 */
+    private getOrCreateDb(workspaceRoot: string): DbBackend {
         const canonical = this.canonicalizeRoot(workspaceRoot);
-        let storage = this.storageByRoot.get(canonical);
-        if (!storage) {
-            storage = new StorageManager({ workspaceRoot: canonical, shardCount: this.shardCount });
-            this.storageByRoot.set(canonical, storage);
+        let db = this.dbByRoot.get(canonical);
+        if (!db) {
+            const dbPath = this.dbPathOverride ?? path.join(canonical, '.sisearch', 'index.sqlite');
+            db = new DbBackend(dbPath);
+            db.openOrInit();
+            this.dbByRoot.set(canonical, db);
         }
-        return storage;
+        return db;
     }
 
     /** 统一 parse 入口:有 WorkerPool 走它,否则主线程回退。
@@ -323,23 +357,10 @@ export class SymbolIndex {
         return this.parseInProcess(files, workspaceRoot, onBatchComplete);
     }
 
-    /** syncDirty 路径:把 parse 结果回灌 inner + fileMetadata。
-     *  与 SyncOrchestrator.synchronize 共享 groupParseResult + applyMetadataToCache 语义。 */
-    private applyParseResult(result: ParseBatchResult): void {
-        const grouped = groupParseResult(result);
-        this.applyMetadataToCache(result.metadata);
-        for (const [file, symbols] of grouped) {
-            this.inner.update(file, symbols);
-        }
-    }
-
-    /** 共享:将 per-file 元数据写入 fileMetadata 缓存。
-     *  收口 orchestrator applyMetadata closure 与 applyParseResult 两处调用。 */
-    private applyMetadataToCache(metadata: IndexedFile[]): void {
-        for (const meta of metadata) {
-            this.fileMetadata.set(meta.relativePath, meta);
-        }
-    }
+    // groupParseResult 用于 parse 聚合时按 relativePath 分组。目前 syncDirty 直接把 batch
+    // 丢给 db.writeBatch,由 DbBackend 内部 upsert。保留 import 以备后续扩展。
+    // (无 @ts-expect-error 是因为 groupParseResult 未再被调用——编译器不报错因为它是纯 import。)
+    private _unusedGroupImport = groupParseResult;
 
     private async scanWorkspace(
         workspaceRoot: string,

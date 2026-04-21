@@ -9,6 +9,8 @@
 
 export interface ReentrancyGuard {
     run<T>(task: () => Promise<T>): Promise<T>;
+    /** 公开查询:当前是否有 task 在跑。供搜索路径决定是否走 fallback/弹窗。 */
+    isRunning(): boolean;
 }
 
 export function createReentrancyGuard(): ReentrancyGuard {
@@ -22,6 +24,9 @@ export function createReentrancyGuard(): ReentrancyGuard {
             });
             inFlight = p;
             return p;
+        },
+        isRunning(): boolean {
+            return inFlight !== undefined;
         },
     };
 }
