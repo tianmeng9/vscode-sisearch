@@ -55,10 +55,32 @@ const FUNCTION_ONE_LINE = /^[ \t]*(?:(?:static|inline|extern|const|virtual|expli
 const FUNCTION_DECL_LINE = /^[ \t]*(?:(?:static|inline|extern|const|virtual|explicit|constexpr|[A-Z_]+)[ \t]+)*[A-Za-z_][A-Za-z0-9_:<>, \t\*&]*?[ \t\*&]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^;{}]*\)[ \t]*$/;
 const BRACE_LINE = /^[ \t]*\{[ \t]*$/;
 
+/**
+ * stream 版可选参数。
+ *
+ * lineContentMode:
+ *   - 'empty'(默认):SymbolEntry.lineContent = '',省内存 —— 寄存器 header 里的
+ *     `#define REG__XXX_MASK 0x00000001UL` 原文对搜索/UI 展示几乎无价值,且 16 MB
+ *     文件可以累积出 13 万+ SymbolEntry,每个 200+ 字节的 lineContent 就是 25 MB
+ *     常驻堆。多 worker 并发时这是主要 OOM 来源。
+ *   - 'full':保留原行(回到老行为),用于小文件或测试对齐。
+ *
+ * macrosOnly:true 时只跑 #define 规则,跳过 struct/union/enum/class/namespace/
+ *   function —— 对 AMD GPU 寄存器 header 这类"全是宏"的机器生成文件,减少 seen
+ *   Set 和 symbols 数组规模,内存足迹再降一档。
+ */
+export interface StreamParseOptions {
+    lineContentMode?: 'empty' | 'full';
+    macrosOnly?: boolean;
+}
+
 export async function extractSymbolsByRegexStream(
     filePath: string,
     relativePath: string,
+    options: StreamParseOptions = {},
 ): Promise<SymbolEntry[]> {
+    const lineContentMode = options.lineContentMode ?? 'empty';
+    const macrosOnly = options.macrosOnly ?? false;
     const symbols: SymbolEntry[] = [];
     const seen = new Set<string>();
 
@@ -75,7 +97,7 @@ export async function extractSymbolsByRegexStream(
             lineNumber,
             endLineNumber: lineNumber,
             column,
-            lineContent,
+            lineContent: lineContentMode === 'full' ? lineContent : '',
         });
     };
 
@@ -95,8 +117,9 @@ export async function extractSymbolsByRegexStream(
             // 去掉可能残留的 \r(crlfDelay: Infinity 通常会处理,但保险)
             const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
 
-            // 1) single-line rules
+            // 1) single-line rules —— macrosOnly 只跑 kind==='macro' 的那条
             for (const r of SINGLE_LINE_RULES) {
+                if (macrosOnly && r.kind !== 'macro') { continue; }
                 const m = r.regex.exec(line);
                 if (m) {
                     const name = m[r.nameGroup];
@@ -105,26 +128,28 @@ export async function extractSymbolsByRegexStream(
                 }
             }
 
-            // 2) function - 同行 { 形式
-            const fmSame = FUNCTION_ONE_LINE.exec(line);
-            if (fmSame) {
-                const name = fmSame[1];
-                const col = fmSame.index + fmSame[0].indexOf(name);
-                emit(name, 'function', lineNumber, col < 0 ? 0 : col, line);
-            }
-
-            // 3) function - 上一行声明 + 本行独立 `{`
-            if (prevLine !== null && BRACE_LINE.test(line)) {
-                const fmDecl = FUNCTION_DECL_LINE.exec(prevLine);
-                if (fmDecl) {
-                    const name = fmDecl[1];
-                    const col = fmDecl.index + fmDecl[0].indexOf(name);
-                    emit(name, 'function', prevLineNumber, col < 0 ? 0 : col, prevLine);
+            if (!macrosOnly) {
+                // 2) function - 同行 { 形式
+                const fmSame = FUNCTION_ONE_LINE.exec(line);
+                if (fmSame) {
+                    const name = fmSame[1];
+                    const col = fmSame.index + fmSame[0].indexOf(name);
+                    emit(name, 'function', lineNumber, col < 0 ? 0 : col, line);
                 }
-            }
 
-            prevLine = line;
-            prevLineNumber = lineNumber;
+                // 3) function - 上一行声明 + 本行独立 `{`
+                if (prevLine !== null && BRACE_LINE.test(line)) {
+                    const fmDecl = FUNCTION_DECL_LINE.exec(prevLine);
+                    if (fmDecl) {
+                        const name = fmDecl[1];
+                        const col = fmDecl.index + fmDecl[0].indexOf(name);
+                        emit(name, 'function', prevLineNumber, col < 0 ? 0 : col, prevLine);
+                    }
+                }
+
+                prevLine = line;
+                prevLineNumber = lineNumber;
+            }
         });
 
         rl.on('close', () => resolve());

@@ -61,12 +61,21 @@ async function main(): Promise<void> {
                 const stat = fs.statSync(file.absPath);
                 let parsed;
                 if (maxBytes > 0 && stat.size >= maxBytes) {
+                    // 超巨文件(>= 10 MB)启用 macrosOnly —— AMD GPU 寄存器 header 级别。
+                    // 非 macro 符号(struct/function)在这类机器生成文件里几乎不存在,
+                    // 跳过它们能把 seen Set 和 symbols 数组规模进一步压缩。
+                    const HUGE_FILE_THRESHOLD = 10 * 1024 * 1024;
+                    const macrosOnly = stat.size >= HUGE_FILE_THRESHOLD;
                     appendDiag(DIAG_LOG_PATH, 'file:readDone', {
                         relativePath: file.relativePath,
                         contentLength: stat.size,
                         stream: true,
+                        macrosOnly,
                     });
-                    parsed = await extractSymbolsByRegexStream(file.absPath, file.relativePath);
+                    parsed = await extractSymbolsByRegexStream(file.absPath, file.relativePath, {
+                        lineContentMode: 'empty',
+                        macrosOnly,
+                    });
                 } else {
                     const content = fs.readFileSync(file.absPath, 'utf-8');
                     appendDiag(DIAG_LOG_PATH, 'file:readDone', {

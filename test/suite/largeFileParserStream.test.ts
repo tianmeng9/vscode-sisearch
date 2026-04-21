@@ -102,6 +102,34 @@ suite('largeFileParserStream', () => {
         fs.rmSync(path.dirname(p), { recursive: true, force: true });
     });
 
+    test('default lineContent is empty to save memory on huge files', async () => {
+        const content = ['#define A 1', '#define B 2'].join('\n');
+        const p = writeFixture(content);
+        const streamed = await extractSymbolsByRegexStream(p, 'fixture.h');
+        for (const s of streamed) {
+            assert.strictEqual((s as { lineContent: string }).lineContent, '',
+                `default lineContent must be empty (got ${JSON.stringify(s.lineContent)})`);
+        }
+        fs.rmSync(path.dirname(p), { recursive: true, force: true });
+    });
+
+    test('macrosOnly option skips struct/function rules', async () => {
+        const content = [
+            '#define M 1',
+            'struct S {',
+            '};',
+            'int f() {',
+            '}',
+        ].join('\n');
+        const p = writeFixture(content);
+        const streamed = await extractSymbolsByRegexStream(p, 'fixture.h', { macrosOnly: true });
+        const kinds = new Set(streamed.map((e: Entry) => e.kind));
+        assert.deepStrictEqual(kinds, new Set(['macro']));
+        assert.strictEqual(streamed.length, 1);
+        assert.strictEqual(streamed[0].name, 'M');
+        fs.rmSync(path.dirname(p), { recursive: true, force: true });
+    });
+
     test('handles 14 MB file without buffering whole content', async () => {
         // 模拟 nbio_6_1_sh_mask.h 级别:14 MB,纯 #define 行
         // 不测峰值 RSS(Node 测 RSS 不稳),只测能跑完 + 产出数量合理。
