@@ -36,6 +36,13 @@ export function registerCommands(
         navigateNext, navigatePrevious, initParser, updateStatusBar, updateSidebarHistory,
     } = deps;
 
+    // Defense in depth: SymbolIndex.synchronize is already single-concurrent
+    // (see src/sync/reentrancyGuard.ts), but without this flag a second click
+    // would still open a second "Synchronizing..." progress notification that
+    // silently joins the first — confusing users and producing duplicate
+    // "Indexed N symbols" messages. Gate at the command layer.
+    let syncInProgress = false;
+
     return [
         vscode.commands.registerCommand('siSearch.focusSearchPanel', () => {
             vscode.commands.executeCommand('siSearch.searchPanel.focus');
@@ -132,6 +139,11 @@ export function registerCommands(
                 return;
             }
 
+            if (syncInProgress) {
+                vscode.window.showInformationMessage('SI Search: Sync already in progress');
+                return;
+            }
+
             try {
                 await initParser(extensionPath);
             } catch (err: any) {
@@ -141,32 +153,37 @@ export function registerCommands(
                 return;
             }
 
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: 'SI Search: Synchronizing symbols...',
-                cancellable: true,
-            }, async (progress, token) => {
-                const cfg = vscode.workspace.getConfiguration('siSearch');
-                const exts = cfg.get<string[]>('includeFileExtensions', ['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl']);
-                const excl = cfg.get<string[]>('excludePatterns', ['**/build/**', '**/.git/**', '**/node_modules/**']);
-                const incPaths = cfg.get<string[]>('includePaths', []);
+            syncInProgress = true;
+            try {
+                await vscode.window.withProgress({
+                    location: vscode.ProgressLocation.Notification,
+                    title: 'SI Search: Synchronizing symbols...',
+                    cancellable: true,
+                }, async (progress, token) => {
+                    const cfg = vscode.workspace.getConfiguration('siSearch');
+                    const exts = cfg.get<string[]>('includeFileExtensions', ['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl']);
+                    const excl = cfg.get<string[]>('excludePatterns', ['**/build/**', '**/.git/**', '**/node_modules/**']);
+                    const incPaths = cfg.get<string[]>('includePaths', []);
 
-                updateStatusBar(statusBarItem, symbolIndex);
+                    updateStatusBar(statusBarItem, symbolIndex);
 
-                await symbolIndex.synchronize(wsRoot, exts, excl, token, (p: SyncProgress) => {
-                    if (p.phase === 'scanning') {
-                        progress.report({ message: 'Scanning files...' });
-                    } else if (p.phase === 'parsing') {
-                        progress.report({ message: `Parsing ${p.current}/${p.total}: ${p.currentFile || ''}`, increment: (1 / Math.max(p.total, 1)) * 100 });
-                    } else {
-                        progress.report({ message: 'Saving index...' });
-                    }
-                }, incPaths);
+                    await symbolIndex.synchronize(wsRoot, exts, excl, token, (p: SyncProgress) => {
+                        if (p.phase === 'scanning') {
+                            progress.report({ message: 'Scanning files...' });
+                        } else if (p.phase === 'parsing') {
+                            progress.report({ message: `Parsing ${p.current}/${p.total}: ${p.currentFile || ''}`, increment: (1 / Math.max(p.total, 1)) * 100 });
+                        } else {
+                            progress.report({ message: 'Saving index...' });
+                        }
+                    }, incPaths);
 
-                updateStatusBar(statusBarItem, symbolIndex);
-                const stats = symbolIndex.getStats();
-                vscode.window.showInformationMessage(`SI Search: Indexed ${stats.symbols} symbols in ${stats.files} files`);
-            });
+                    updateStatusBar(statusBarItem, symbolIndex);
+                    const stats = symbolIndex.getStats();
+                    vscode.window.showInformationMessage(`SI Search: Indexed ${stats.symbols} symbols in ${stats.files} files`);
+                });
+            } finally {
+                syncInProgress = false;
+            }
         }),
 
         vscode.commands.registerCommand('siSearch.clearIndex', () => {

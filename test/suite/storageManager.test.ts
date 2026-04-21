@@ -3,6 +3,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { StorageManager } from '../../src/storage/storageManager';
+import { encodeMessagePack } from '../../src/storage/codec';
+import { shardFileName } from '../../src/storage/shardStrategy';
+import { ShardStreamWriter } from '../../src/storage/shardStreamWriter';
 
 suite('storageManager', () => {
     test('saveFull writes shards and load rebuilds snapshot', async () => {
@@ -165,5 +168,101 @@ suite('storageManager', () => {
         assert.strictEqual(loaded.fileMetadata.size, 8);
 
         fs.rmSync(workspaceRoot, { recursive: true });
+    });
+});
+
+suite('StorageManager.load chunked format', () => {
+    function setupRoot(): string {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smload-'));
+        fs.mkdirSync(path.join(root, '.sisearch', 'shards'), { recursive: true });
+        return root;
+    }
+
+    test('reads legacy single-array shard file', async () => {
+        const root = setupRoot();
+        const shardFile = path.join(root, '.sisearch', 'shards', shardFileName(0));
+        const legacy = [{ relativePath: 'a.c', symbols: [], metadata: { relativePath: 'a.c', mtime: 1, size: 1, symbolCount: 0 } }];
+        fs.writeFileSync(shardFile, Buffer.from(encodeMessagePack(legacy)));
+
+        const mgr = new StorageManager({ workspaceRoot: root, shardCount: 16 });
+        const snap = await mgr.load();
+        assert.strictEqual(snap.fileMetadata.has('a.c'), true);
+    });
+
+    test('reads multi-chunk shard file', async () => {
+        const root = setupRoot();
+        const shardFile = path.join(root, '.sisearch', 'shards', shardFileName(0));
+        const c1 = encodeMessagePack([{ relativePath: 'a.c', symbols: [], metadata: { relativePath: 'a.c', mtime: 1, size: 1, symbolCount: 0 } }]);
+        const c2 = encodeMessagePack([{ relativePath: 'b.c', symbols: [], metadata: { relativePath: 'b.c', mtime: 2, size: 2, symbolCount: 0 } }]);
+        fs.writeFileSync(shardFile, Buffer.concat([Buffer.from(c1), Buffer.from(c2)]));
+
+        const mgr = new StorageManager({ workspaceRoot: root, shardCount: 16 });
+        const snap = await mgr.load();
+        assert.strictEqual(snap.fileMetadata.has('a.c'), true);
+        assert.strictEqual(snap.fileMetadata.has('b.c'), true);
+    });
+
+    test('truncated final chunk: keep whole chunks, drop tail, no throw', async () => {
+        const root = setupRoot();
+        const shardFile = path.join(root, '.sisearch', 'shards', shardFileName(0));
+        const c1 = encodeMessagePack([{ relativePath: 'a.c', symbols: [], metadata: { relativePath: 'a.c', mtime: 1, size: 1, symbolCount: 0 } }]);
+        const c2 = encodeMessagePack([{ relativePath: 'b.c', symbols: [], metadata: { relativePath: 'b.c', mtime: 2, size: 2, symbolCount: 0 } }]);
+        const truncated = Buffer.concat([Buffer.from(c1), Buffer.from(c2).subarray(0, 3)]);
+        fs.writeFileSync(shardFile, truncated);
+
+        const mgr = new StorageManager({ workspaceRoot: root, shardCount: 16 });
+        const snap = await mgr.load();
+        assert.strictEqual(snap.fileMetadata.has('a.c'), true, 'first whole chunk survives');
+        assert.strictEqual(snap.fileMetadata.has('b.c'), false, 'truncated tail dropped');
+    });
+
+    test('fully corrupt shard: empty result, no throw', async () => {
+        const root = setupRoot();
+        const shardFile = path.join(root, '.sisearch', 'shards', shardFileName(0));
+        fs.writeFileSync(shardFile, Buffer.from([0xff, 0xff, 0xff, 0xff]));
+
+        const mgr = new StorageManager({ workspaceRoot: root, shardCount: 16 });
+        const snap = await mgr.load();
+        assert.strictEqual(snap.fileMetadata.size, 0);
+    });
+});
+
+suite('StorageManager.openStreamWriter', () => {
+    test('returns writer writing into .sisearch/shards with matching shardCount', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smwriter-'));
+        const mgr = new StorageManager({ workspaceRoot: root, shardCount: 4, chunkThreshold: 1 });
+        const writer = mgr.openStreamWriter();
+        assert.ok(writer instanceof ShardStreamWriter);
+
+        writer.add(2, { relativePath: 'x.c', symbols: [], metadata: { relativePath: 'x.c', mtime: 1, size: 1, symbolCount: 0 } });
+        writer.flushAll();
+        writer.close();
+
+        assert.deepStrictEqual(fs.readdirSync(path.join(root, '.sisearch', 'shards')), ['02.msgpack']);
+    });
+});
+
+suite('StorageManager.saveFull / saveDirty through writer', () => {
+    test('saveFull produces files readable by load() with all entries', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sfsw-'));
+        const mgr = new StorageManager({ workspaceRoot: root, shardCount: 4, chunkThreshold: 1 });
+        const snapshot = {
+            symbolsByFile: new Map([
+                ['a.c', []],
+                ['b.c', []],
+                ['c.c', []],
+            ]),
+            fileMetadata: new Map([
+                ['a.c', { relativePath: 'a.c', mtime: 1, size: 1, symbolCount: 0 }],
+                ['b.c', { relativePath: 'b.c', mtime: 2, size: 2, symbolCount: 0 }],
+                ['c.c', { relativePath: 'c.c', mtime: 3, size: 3, symbolCount: 0 }],
+            ]),
+        };
+        await mgr.saveFull(snapshot);
+        const back = await mgr.load();
+        assert.strictEqual(back.fileMetadata.size, 3);
+        assert.strictEqual(back.fileMetadata.has('a.c'), true);
+        assert.strictEqual(back.fileMetadata.has('b.c'), true);
+        assert.strictEqual(back.fileMetadata.has('c.c'), true);
     });
 });

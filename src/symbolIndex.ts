@@ -20,6 +20,7 @@ import { classifyBatches } from './sync/batchClassifier';
 import type { WorkerPool, ParseBatchResult } from './sync/workerPool';
 import { SyncOrchestrator } from './sync/syncOrchestrator';
 import { groupParseResult } from './sync/parseResultGrouping';
+import { createReentrancyGuard } from './sync/reentrancyGuard';
 
 const DEFAULT_SHARD_COUNT = 16;
 
@@ -37,6 +38,9 @@ export class SymbolIndex {
     private _status: IndexStatus = 'none';
     private readonly shardCount: number;
     private workerPool: WorkerPool | undefined;
+    // 单并发 synchronize 闸门：cancel-then-resync 会并行两条 pipeline 共享 workerPool/index,
+    // 33k 文件级别直接把 VS Code 打崩。详见 src/sync/reentrancyGuard.ts。
+    private readonly syncGuard = createReentrancyGuard();
     // StorageManager 按 workspaceRoot 记忆化 —— 避免每次 sync/save/load 重新 new
     private readonly storageByRoot = new Map<string, StorageManager>();
     // S8: canonicalizeRoot 结果缓存 —— 避免每次 getStorage/clearDisk 都走 realpathSync syscall
@@ -110,13 +114,40 @@ export class SymbolIndex {
         onProgress?: (p: SyncProgress) => void,
         includePaths?: string[],
     ): Promise<void> {
+        // 单并发闸门：若已有 sync 在跑（例如用户点了 Cancel 但上一轮 workerPool.parse
+        // 还在 drain 队列），第二次调用会拿到同一个 promise，不再并行跑两条 pipeline。
+        return this.syncGuard.run(() =>
+            this._doSynchronize(workspaceRoot, extensions, excludePatterns, token, onProgress, includePaths),
+        );
+    }
+
+    private async _doSynchronize(
+        workspaceRoot: string,
+        extensions: string[],
+        excludePatterns: string[],
+        token: vscode.CancellationToken,
+        onProgress?: (p: SyncProgress) => void,
+        includePaths?: string[],
+    ): Promise<void> {
         this.setStatus('building');
 
         const storage = this.getStorage(workspaceRoot);
         const orchestrator = new SyncOrchestrator({
             scanFiles: async (root) => this.scanWorkspace(root, extensions, excludePatterns, includePaths, token),
             classify: async (input) => classifyBatches(input),
-            workerPool: { parse: (files, onBatchComplete) => this.runParse(files, workspaceRoot, onBatchComplete) },
+            workerPool: {
+                parse: async (files, onBatchResult, onBatchComplete, cancelSignal) => {
+                    if (this.workerPool) {
+                        await this.workerPool.parse(files, onBatchResult, onBatchComplete, cancelSignal);
+                        return;
+                    }
+                    // Fallback: single-batch emit
+                    const result = await this.parseInProcess(files, workspaceRoot, onBatchComplete);
+                    if (result.symbols.length + result.metadata.length + result.errors.length > 0) {
+                        await onBatchResult(result);
+                    }
+                },
+            },
             index: {
                 update: (file, symbols) => this.inner.update(file, symbols),
                 remove: file => {
@@ -277,7 +308,17 @@ export class SymbolIndex {
         onBatchComplete?: (done: number, total: number, lastFile?: string) => void,
     ): Promise<ParseBatchResult> {
         if (this.workerPool) {
-            return this.workerPool.parse(files, onBatchComplete);
+            const aggregated: ParseBatchResult = { symbols: [], metadata: [], errors: [] };
+            await this.workerPool.parse(
+                files,
+                async (batch) => {
+                    for (const s of batch.symbols) { aggregated.symbols.push(s); }
+                    for (const m of batch.metadata) { aggregated.metadata.push(m); }
+                    for (const e of batch.errors) { aggregated.errors.push(e); }
+                },
+                onBatchComplete,
+            );
+            return aggregated;
         }
         return this.parseInProcess(files, workspaceRoot, onBatchComplete);
     }

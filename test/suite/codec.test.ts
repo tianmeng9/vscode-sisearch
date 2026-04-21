@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { encodeMessagePack, decodeMessagePack } from '../../src/storage/codec';
+import { encodeMessagePack, decodeMessagePack, decodeMessagePackMulti } from '../../src/storage/codec';
 import { shardForPath, fnv1a, shardFileName } from '../../src/storage/shardStrategy';
 
 suite('storage codec', () => {
@@ -42,5 +42,29 @@ suite('storage codec', () => {
         assert.strictEqual(shardFileName(0), '00.msgpack');
         assert.strictEqual(shardFileName(15), '0f.msgpack');
         assert.strictEqual(shardFileName(255), 'ff.msgpack');
+    });
+});
+
+suite('decodeMessagePackMulti', () => {
+    test('decodes single top-level value (legacy single-array file)', () => {
+        const buf = encodeMessagePack([{ a: 1 }, { a: 2 }]);
+        const out = [...decodeMessagePackMulti(Buffer.from(buf))];
+        assert.strictEqual(out.length, 1);
+        assert.deepStrictEqual(out[0], [{ a: 1 }, { a: 2 }]);
+    });
+
+    test('decodes concatenated chunks', () => {
+        const c1 = encodeMessagePack([{ a: 1 }]);
+        const c2 = encodeMessagePack([{ a: 2 }, { a: 3 }]);
+        const buf = Buffer.concat([Buffer.from(c1), Buffer.from(c2)]);
+        const out = [...decodeMessagePackMulti(buf)];
+        assert.strictEqual(out.length, 2);
+        assert.deepStrictEqual(out[0], [{ a: 1 }]);
+        assert.deepStrictEqual(out[1], [{ a: 2 }, { a: 3 }]);
+    });
+
+    test('empty buffer yields nothing', () => {
+        const out = [...decodeMessagePackMulti(Buffer.alloc(0))];
+        assert.strictEqual(out.length, 0);
     });
 });

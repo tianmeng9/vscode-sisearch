@@ -12,6 +12,7 @@ import { FileWatcher } from './fileWatcher';
 import { WorkerPool } from './sync/workerPool';
 import { createWorkerThreadFactory } from './sync/workerPoolFactory';
 import { AutoSyncController } from './sync/autoSync';
+import { resolveMaxFileSizeBytes } from './parserConfig';
 
 /** 把 store 当前历史快照推给 sidebar webview。 */
 export function updateSidebarHistory(store: SearchStore, sidebar: SidebarProvider): void {
@@ -55,15 +56,19 @@ export function updateStatusBar(item: vscode.StatusBarItem, index: SymbolIndex):
     }
 }
 
-/** 为 SymbolIndex 挂接 WorkerPool,并把 dispose 登记到 extension context。 */
+/** 为 SymbolIndex 挂接 WorkerPool,并把 dispose 登记到 extension context。
+ *  从 VS Code 配置读取 siSearch.parser.maxFileSizeBytes,透传给 parseWorker,
+ *  用作大文件 tree-sitter 回退阈值(防 WASM 爆堆 → extension host exit 134)。 */
 export function attachWorkerPool(
     context: vscode.ExtensionContext,
     symbolIndex: SymbolIndex,
 ): void {
     const poolSize = Math.max(2, Math.min(8, os.cpus().length - 1));
+    const cfg = vscode.workspace.getConfiguration('siSearch');
+    const maxBytes = resolveMaxFileSizeBytes(cfg.get('parser.maxFileSizeBytes'));
     const workerPool = new WorkerPool({
         size: poolSize,
-        workerFactory: createWorkerThreadFactory(context.extensionPath),
+        workerFactory: createWorkerThreadFactory(context.extensionPath, { maxBytes }),
     });
     symbolIndex.setWorkerPool(workerPool);
     context.subscriptions.push({ dispose: () => { void workerPool.dispose(); } });

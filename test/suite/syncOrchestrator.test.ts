@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { SyncOrchestrator } from '../../src/sync/syncOrchestrator';
 import type { SymbolEntry, IndexedFile } from '../../src/index/indexTypes';
+import type { ParseBatchResult } from '../../src/sync/workerPool';
 
 suite('syncOrchestrator', () => {
     test('applies deletions and worker parse results to index', async () => {
@@ -14,11 +15,14 @@ suite('syncOrchestrator', () => {
                 toDelete: ['old.c'],
             }),
             workerPool: {
-                parse: async () => ({
-                    symbols: [{ name: 'foo', kind: 'function' as const, filePath: '/workspace/a.c', relativePath: 'a.c', lineNumber: 1, endLineNumber: 1, column: 0, lineContent: 'foo();' }],
-                    metadata: [{ relativePath: 'a.c', mtime: 10, size: 100, symbolCount: 1 }],
-                    errors: [],
-                }),
+                parse: async (files, onBatchResult, onBatchComplete) => {
+                    await onBatchResult({
+                        symbols: [{ name: 'foo', kind: 'function' as const, filePath: '/workspace/a.c', relativePath: 'a.c', lineNumber: 1, endLineNumber: 1, column: 0, lineContent: 'foo();' }],
+                        metadata: [{ relativePath: 'a.c', mtime: 10, size: 100, symbolCount: 1 }],
+                        errors: [],
+                    });
+                    onBatchComplete?.(files.length, files.length, files[files.length - 1]?.relativePath);
+                },
             },
             index: {
                 update(file: string, symbols: unknown[]) { updates.push(`${file}:${symbols.length}`); },
@@ -40,7 +44,9 @@ suite('syncOrchestrator', () => {
         const orchestrator = new SyncOrchestrator({
             scanFiles: async () => [],
             classify: async () => ({ toProcess: [], toDelete: [] }),
-            workerPool: { parse: async () => { parseCalled = true; return { symbols: [], metadata: [], errors: [] }; } },
+            workerPool: {
+                parse: async () => { parseCalled = true; },
+            },
             index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
             storage: { saveFull: async () => {} },
             getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
@@ -63,11 +69,14 @@ suite('syncOrchestrator', () => {
                 toDelete: ['gone.c'],
             }),
             workerPool: {
-                parse: async () => ({
-                    symbols: [],
-                    metadata: [{ relativePath: 'new.c', mtime: 1, size: 1, symbolCount: 0 }],
-                    errors: [],
-                }),
+                parse: async (files, onBatchResult, onBatchComplete) => {
+                    await onBatchResult({
+                        symbols: [],
+                        metadata: [{ relativePath: 'new.c', mtime: 1, size: 1, symbolCount: 0 }],
+                        errors: [],
+                    });
+                    onBatchComplete?.(files.length, files.length, files[files.length - 1]?.relativePath);
+                },
             },
             index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
             storage: {
@@ -90,7 +99,9 @@ suite('syncOrchestrator', () => {
         const orchestrator = new SyncOrchestrator({
             scanFiles: async () => [],
             classify: async () => ({ toProcess: [], toDelete: ['x.c'] }),
-            workerPool: { parse: async () => ({ symbols: [], metadata: [], errors: [] }) },
+            workerPool: {
+                parse: async () => {},
+            },
             index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
             storage: { saveFull: async () => { saveFullCalled = true; } },
             getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
@@ -111,11 +122,14 @@ suite('syncOrchestrator', () => {
                 toDelete: [],
             }),
             workerPool: {
-                parse: async () => ({
-                    symbols: [],
-                    metadata: [{ relativePath: 'x.c', mtime: 2, size: 3, symbolCount: 0 }],
-                    errors: [],
-                }),
+                parse: async (files, onBatchResult, onBatchComplete) => {
+                    await onBatchResult({
+                        symbols: [{ name: 'bar', kind: 'function' as const, filePath: '/ws/x.c', relativePath: 'x.c', lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '' }],
+                        metadata: [{ relativePath: 'x.c', mtime: 2, size: 3, symbolCount: 0 }],
+                        errors: [],
+                    });
+                    onBatchComplete?.(files.length, files.length, files[files.length - 1]?.relativePath);
+                },
             },
             index: {
                 update: () => { order.push('update'); },
@@ -148,15 +162,17 @@ suite('syncOrchestrator', () => {
                 toDelete: [],
             }),
             workerPool: {
-                // Simulate WorkerPool firing onBatchComplete after each batch.
-                parse: async (files, onBatchComplete) => {
-                    onBatchComplete?.(1, files.length, files[0].relativePath);
-                    onBatchComplete?.(2, files.length, files[1].relativePath);
-                    return {
-                        symbols: [],
-                        metadata: files.map(f => ({ relativePath: f.relativePath, mtime: 1, size: 1, symbolCount: 0 })),
-                        errors: [],
-                    };
+                // Simulate WorkerPool firing onBatchResult + onBatchComplete after each batch.
+                parse: async (files, onBatchResult, onBatchComplete) => {
+                    for (let i = 0; i < files.length; i++) {
+                        const f = files[i];
+                        await onBatchResult({
+                            symbols: [],
+                            metadata: [{ relativePath: f.relativePath, mtime: 1, size: 1, symbolCount: 0 }],
+                            errors: [],
+                        });
+                        onBatchComplete?.(i + 1, files.length, f.relativePath);
+                    }
                 },
             },
             index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
@@ -190,7 +206,9 @@ suite('syncOrchestrator', () => {
         const orchestrator = new SyncOrchestrator({
             scanFiles: async () => [],
             classify: async () => ({ toProcess: [], toDelete: [] }),
-            workerPool: { parse: async () => ({ symbols: [], metadata: [], errors: [] }) },
+            workerPool: {
+                parse: async () => {},
+            },
             index: { update: () => {}, remove: () => {}, applyMetadata: () => {} },
             storage: {
                 saveFull: async () => { anySaveCalled = true; },
@@ -201,5 +219,109 @@ suite('syncOrchestrator', () => {
 
         await orchestrator.synchronize({ workspaceRoot: '/ws' });
         assert.strictEqual(anySaveCalled, false);
+    });
+});
+
+suite('SyncOrchestrator streaming', () => {
+    function makeDeps(overrides: any = {}): any {
+        const updates: Array<[string, number]> = [];
+        const metaApplied: Array<{ relativePath: string }> = [];
+        return {
+            scanFiles: async () => [
+                { relativePath: 'a.c', absPath: '/w/a.c', mtime: 1, size: 1 },
+                { relativePath: 'b.c', absPath: '/w/b.c', mtime: 2, size: 2 },
+            ],
+            classify: async (x: any) => ({
+                toProcess: x.currentFiles,
+                toDelete: new Set<string>(),
+            }),
+            workerPool: {
+                parse: async (files: any[], onBatch: (r: ParseBatchResult) => Promise<void>) => {
+                    for (const f of files) {
+                        await onBatch({
+                            symbols: [{
+                                name: f.relativePath, kind: 'function',
+                                filePath: f.absPath, relativePath: f.relativePath,
+                                lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '',
+                            }] as any,
+                            metadata: [{ relativePath: f.relativePath, mtime: 1, size: 1, symbolCount: 1 }],
+                            errors: [],
+                        });
+                    }
+                },
+            },
+            index: {
+                update: (file: string, symbols: any[]) => { updates.push([file, symbols.length]); },
+                remove: () => {},
+                applyMetadata: (m: any[]) => { for (const x of m) { metaApplied.push(x); } },
+                fileMetadata: new Map(),
+            },
+            storage: {
+                saveFull: async () => {},
+                saveDirty: async () => {},
+            },
+            getSnapshot: () => ({ symbolsByFile: new Map(), fileMetadata: new Map() }),
+            _spy: { updates, metaApplied },
+            ...overrides,
+        };
+    }
+
+    test('update is called once per file, per batch', async () => {
+        const deps = makeDeps();
+        const orch = new SyncOrchestrator(deps);
+        await orch.synchronize({ workspaceRoot: '/w' });
+        assert.strictEqual(deps._spy.updates.length, 2);
+        assert.deepStrictEqual(deps._spy.updates.map((u: any) => u[0]).sort(), ['a.c', 'b.c']);
+    });
+
+    test('applyMetadata called per batch (not once at end)', async () => {
+        const deps = makeDeps();
+        const orch = new SyncOrchestrator(deps);
+        await orch.synchronize({ workspaceRoot: '/w' });
+        assert.strictEqual(deps._spy.metaApplied.length, 2);
+    });
+
+    test('passes cancellationToken through to workerPool.parse', async () => {
+        // Regression: orchestrator used to await parse() with no way for the
+        // underlying pool to know about cancellation, so cancel couldn't stop
+        // parsing mid-stream. Now orchestrator must forward its cancelToken.
+        let seenSignal: { isCancellationRequested: boolean } | undefined;
+        const deps = makeDeps({
+            workerPool: {
+                parse: async (
+                    _files: any,
+                    _onBatch: any,
+                    _onComplete: any,
+                    signal?: { isCancellationRequested: boolean },
+                ) => {
+                    seenSignal = signal;
+                },
+            },
+        });
+        const orch = new SyncOrchestrator(deps);
+        const token = { isCancellationRequested: false };
+        await orch.synchronize({ workspaceRoot: '/w', cancellationToken: token });
+        assert.ok(seenSignal, 'workerPool.parse must receive a cancel signal');
+        // Mutating the orchestrator's token must propagate to the signal object
+        // the pool saw — same reference or live-read proxy.
+        token.isCancellationRequested = true;
+        assert.strictEqual(
+            seenSignal!.isCancellationRequested,
+            true,
+            'signal must observe live token state, not a stale snapshot',
+        );
+    });
+
+    test('saveDirty called at end with collected dirty paths', async () => {
+        let saveDirtyArgs: any;
+        const deps = makeDeps({
+            storage: {
+                saveFull: async () => {},
+                saveDirty: async (_snap: any, dirty: Set<string>) => { saveDirtyArgs = [...dirty].sort(); },
+            },
+        });
+        const orch = new SyncOrchestrator(deps);
+        await orch.synchronize({ workspaceRoot: '/w' });
+        assert.deepStrictEqual(saveDirtyArgs, ['a.c', 'b.c']);
     });
 });

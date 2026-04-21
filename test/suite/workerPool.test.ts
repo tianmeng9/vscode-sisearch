@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { WorkerPool } from '../../src/sync/workerPool';
-import type { PoolWorker } from '../../src/sync/workerPool';
+import type { PoolWorker, ParseBatchResult } from '../../src/sync/workerPool';
 
 function makeStubWorker(): PoolWorker {
     return {
@@ -28,154 +28,142 @@ function makeStubWorker(): PoolWorker {
 }
 
 suite('workerPool', () => {
-    test('dispatches batch and returns symbols', async () => {
+    test('invokes onBatchResult once per batch', async () => {
         const pool = new WorkerPool({
             size: 1,
             workerFactory: async () => makeStubWorker(),
+            batchSize: 2,
         });
-
-        const result = await pool.parse([{ absPath: '/workspace/a.c', relativePath: 'a.c' }]);
-        assert.strictEqual(result.symbols.length, 1);
-        assert.strictEqual(result.symbols[0].relativePath, 'a.c');
-        assert.strictEqual(result.errors.length, 0);
-        await pool.dispose();
-    });
-
-    test('aggregates results from multiple files', async () => {
-        const pool = new WorkerPool({
-            size: 1,
-            workerFactory: async () => makeStubWorker(),
-        });
-
         const files = [
-            { absPath: '/workspace/a.c', relativePath: 'a.c' },
-            { absPath: '/workspace/b.c', relativePath: 'b.c' },
+            { absPath: '/w/a.c', relativePath: 'a.c' },
+            { absPath: '/w/b.c', relativePath: 'b.c' },
+            { absPath: '/w/c.c', relativePath: 'c.c' },
         ];
-        const result = await pool.parse(files);
-        assert.strictEqual(result.symbols.length, 2);
-        assert.strictEqual(result.metadata.length, 2);
+        const batches: ParseBatchResult[] = [];
+        await pool.parse(files, async (r) => { batches.push(r); });
+        assert.strictEqual(batches.length, 2, 'ceil(3/2) = 2 batches');
+        assert.strictEqual(batches[0].symbols.length, 2);
+        assert.strictEqual(batches[1].symbols.length, 1);
         await pool.dispose();
     });
 
-    test('empty file list returns empty result', async () => {
+    test('empty file list does not invoke callback', async () => {
         const pool = new WorkerPool({
             size: 1,
             workerFactory: async () => makeStubWorker(),
         });
-
-        const result = await pool.parse([]);
-        assert.deepStrictEqual(result.symbols, []);
-        assert.deepStrictEqual(result.metadata, []);
-        assert.deepStrictEqual(result.errors, []);
+        let called = 0;
+        await pool.parse([], async () => { called++; });
+        assert.strictEqual(called, 0);
         await pool.dispose();
     });
 
-    test('errors from workers are collected not thrown', async () => {
+    test('pending callback throttles cursor (back-pressure)', async () => {
+        const pool = new WorkerPool({
+            size: 1,
+            workerFactory: async () => makeStubWorker(),
+            batchSize: 1,
+        });
+        const files = [
+            { absPath: '/w/a.c', relativePath: 'a.c' },
+            { absPath: '/w/b.c', relativePath: 'b.c' },
+        ];
+        let released!: () => void;
+        const gate = new Promise<void>(res => { released = res; });
+        let observedBatches = 0;
+        const parsePromise = pool.parse(files, async () => {
+            observedBatches++;
+            if (observedBatches === 1) { await gate; }
+        });
+        await new Promise(res => setImmediate(res));
+        await new Promise(res => setImmediate(res));
+        assert.strictEqual(observedBatches, 1, 'second batch must wait on first callback');
+        released();
+        await parsePromise;
+        assert.strictEqual(observedBatches, 2);
+        await pool.dispose();
+    });
+
+    test('callback throwing rejects parse', async () => {
+        const pool = new WorkerPool({
+            size: 1,
+            workerFactory: async () => makeStubWorker(),
+        });
+        const files = [{ absPath: '/w/a.c', relativePath: 'a.c' }];
+        await assert.rejects(
+            () => pool.parse(files, async () => { throw new Error('boom'); }),
+            /boom/,
+        );
+        await pool.dispose();
+    });
+
+    test('worker errors surface in callback result.errors', async () => {
         const pool = new WorkerPool({
             size: 1,
             workerFactory: async () => ({
-                parseBatch: async () => ({
-                    symbols: [],
-                    metadata: [],
-                    errors: ['a.c: parse error'],
-                }),
+                parseBatch: async () => ({ symbols: [], metadata: [], errors: ['a.c: parse error'] }),
                 dispose: async () => {},
             }),
         });
-
-        const result = await pool.parse([{ absPath: '/workspace/a.c', relativePath: 'a.c' }]);
-        assert.strictEqual(result.errors.length, 1);
-        assert.ok(result.errors[0].includes('parse error'));
+        const files = [{ absPath: '/w/a.c', relativePath: 'a.c' }];
+        const seen: ParseBatchResult[] = [];
+        await pool.parse(files, async (r) => { seen.push(r); });
+        assert.deepStrictEqual(seen[0].errors, ['a.c: parse error']);
         await pool.dispose();
     });
 
-    test('onBatchComplete fires per batch with monotonically increasing done count (regression: parsing progress was stuck at 0/N)', async () => {
-        const pool = new WorkerPool({
-            size: 2,
-            batchSize: 3,                              // force multiple batches
-            workerFactory: async () => makeStubWorker(),
-        });
-
-        const files = Array.from({ length: 10 }, (_, i) => ({
-            absPath: `/ws/file${i}.c`,
-            relativePath: `file${i}.c`,
-        }));
-
-        const progressCalls: Array<{ done: number; total: number; lastFile?: string }> = [];
-        const result = await pool.parse(files, (done, total, lastFile) => {
-            progressCalls.push({ done, total, lastFile });
-        });
-
-        // 10 files / 3 per batch = 4 batches (3+3+3+1)
-        assert.ok(progressCalls.length >= 2, `expected at least 2 progress callbacks, got ${progressCalls.length}`);
-        // Final callback must report all files done
-        const last = progressCalls[progressCalls.length - 1];
-        assert.strictEqual(last.done, 10, 'final done count must equal total');
-        assert.strictEqual(last.total, 10, 'total must be stable');
-        // done must be monotonically non-decreasing
-        let prev = 0;
-        for (const c of progressCalls) {
-            assert.ok(c.done >= prev, `done regressed: ${prev} -> ${c.done}`);
-            assert.ok(c.done <= c.total, `done ${c.done} exceeded total ${c.total}`);
-            prev = c.done;
-        }
-        // lastFile is attached on every callback (sidebar progress needs this)
-        for (const c of progressCalls) {
-            assert.ok(c.lastFile && c.lastFile.startsWith('file'), `missing lastFile on callback: ${JSON.stringify(c)}`);
-        }
-        // And the parse result still contains everything
-        assert.strictEqual(result.symbols.length, 10);
-        await pool.dispose();
-    });
-
-    test('onBatchComplete not required (backward compat)', async () => {
+    test('cancellation token stops parse mid-stream', async () => {
+        // Regression: cancel during a long sync left orchestrator blocked on
+        // workerPool.parse(), so the UI "cancel" button did not actually stop work.
+        // After fix: token.isCancellationRequested causes workerLoop to exit
+        // promptly, and parse() resolves without processing remaining files.
+        const cancelAfter = 2;
         const pool = new WorkerPool({
             size: 1,
-            batchSize: 2,
             workerFactory: async () => makeStubWorker(),
+            batchSize: 1,
         });
-
-        const files = Array.from({ length: 5 }, (_, i) => ({
-            absPath: `/ws/${i}.c`,
-            relativePath: `${i}.c`,
+        const files = Array.from({ length: 10 }, (_, i) => ({
+            absPath: `/w/f${i}.c`, relativePath: `f${i}.c`,
         }));
 
-        // no callback provided — must not throw
-        const result = await pool.parse(files);
-        assert.strictEqual(result.symbols.length, 5);
+        const token = { isCancellationRequested: false };
+        let seenBatches = 0;
+        await pool.parse(
+            files,
+            async () => {
+                seenBatches++;
+                if (seenBatches >= cancelAfter) { token.isCancellationRequested = true; }
+            },
+            undefined,
+            token,
+        );
+        assert.ok(
+            seenBatches <= cancelAfter + 1,
+            `expected parse to stop shortly after cancel (saw ${seenBatches} batches of ${files.length})`,
+        );
+        assert.ok(seenBatches < files.length, 'parse must not process all files after cancel');
         await pool.dispose();
     });
 
-    test('multiple workers split work evenly', async () => {
-        const workerCalls: number[] = [0, 0];
+    test('pre-cancelled token skips parse entirely', async () => {
         const pool = new WorkerPool({
             size: 2,
-            workerFactory: async () => {
-                const idx = workerCalls.length - 2;
-                return {
-                    parseBatch: async (files) => {
-                        workerCalls[idx < 0 ? 0 : idx]++;
-                        return {
-                            symbols: files.map(f => ({
-                                name: f.relativePath, kind: 'function' as const,
-                                filePath: f.absPath, relativePath: f.relativePath,
-                                lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '',
-                            })),
-                            metadata: files.map(f => ({ relativePath: f.relativePath, mtime: 1, size: 1, symbolCount: 1 })),
-                            errors: [],
-                        };
-                    },
-                    dispose: async () => {},
-                };
-            },
+            workerFactory: async () => makeStubWorker(),
+            batchSize: 1,
         });
-
-        const files = Array.from({ length: 4 }, (_, i) => ({
-            absPath: `/workspace/file${i}.c`,
-            relativePath: `file${i}.c`,
-        }));
-        const result = await pool.parse(files);
-        assert.strictEqual(result.symbols.length, 4);
+        const files = [
+            { absPath: '/w/a.c', relativePath: 'a.c' },
+            { absPath: '/w/b.c', relativePath: 'b.c' },
+        ];
+        let seen = 0;
+        await pool.parse(
+            files,
+            async () => { seen++; },
+            undefined,
+            { isCancellationRequested: true },
+        );
+        assert.strictEqual(seen, 0, 'no batches should be processed when token is already cancelled');
         await pool.dispose();
     });
 });

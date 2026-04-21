@@ -1,5 +1,20 @@
 import * as path from 'path';
 import { SymbolEntry, SymbolKind } from './types';
+import { extractSymbolsByRegex } from './largeFileParser';
+
+/**
+ * parseSymbols 选项。
+ *
+ * maxBytes:文件字节数阈值,超过则走 largeFileParser 正则回退,不进 tree-sitter。
+ *   - 0 或 undefined:不启用阈值(始终走 tree-sitter) —— 用户明示承担 WASM 爆堆风险。
+ *   - 正整数:content.length >= maxBytes 时走回退。
+ *
+ * 背景:web-tree-sitter WASM 线性内存硬上限 2 GB。AMD GPU 驱动 24 MB 级自动生成
+ * 头文件一次 parse 会打穿内存上限并 process.abort() —— 整个 extension host 挂掉。
+ */
+export interface ParseOptions {
+    maxBytes?: number;
+}
 
 // web-tree-sitter 0.21+ 是 ESM-only，VS Code 扩展编译为 CJS，
 // TypeScript 会把 import() 降级为 require()，所以用 Function 绕过。
@@ -13,6 +28,15 @@ let langC: any = null;
 let langCpp: any = null;
 let queryC: any = null;
 let queryCpp: any = null;
+// 每语言一个持久 Parser。per-file `new ParserClass()` 会让 web-tree-sitter 的
+// WASM malloc/free 持续累积碎片，33k 文件规模会让 `parser.parse()` 里的 tree
+// alloc 最终失败，V8 作为 abort 触发 extension host exit 134（Crashpad
+// "last resort; GC in old space requested" 签名）。Parser 可反复 `parse()`，
+// 只要释放返回的 Tree；切语言用 setLanguage，代价极低。
+let parserC: any = null;
+let parserCpp: any = null;
+// 测试钩子：统计 Parser 构造次数。生产路径不读。
+let parsersCreatedCount = 0;
 
 const C_EXTENSIONS = new Set(['.c', '.h']);
 const CPP_EXTENSIONS = new Set(['.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl']);
@@ -75,31 +99,51 @@ export async function initParser(extensionPath: string): Promise<void> {
     queryC = createQuery(langC, QUERY_SOURCE_C);
     queryCpp = createQuery(langCpp, QUERY_SOURCE_CPP);
 
+    // 持久 Parser：每语言一个，整个 worker 生命周期复用。
+    parserC = new ParserClass();
+    parserC.setLanguage(langC);
+    parsersCreatedCount++;
+
+    parserCpp = new ParserClass();
+    parserCpp.setLanguage(langCpp);
+    parsersCreatedCount++;
+
     parserReady = true;
 }
 
-export function parseSymbols(filePath: string, relativePath: string, content: string): SymbolEntry[] {
-    if (!parserReady || !langC || !langCpp || !TreeSitter) { return []; }
+export function parseSymbols(
+    filePath: string,
+    relativePath: string,
+    content: string,
+    options?: ParseOptions,
+): SymbolEntry[] {
+    // 大文件闸门 —— 在任何 tree-sitter 调用之前拦截。maxBytes>0 且 content 超阈值则
+    // 不走 parser.parse(),直接交给 O(n) 正则回退,避免 WASM 线性内存爆堆 abort()。
+    const maxBytes = options?.maxBytes ?? 0;
+    if (maxBytes > 0 && content.length >= maxBytes) {
+        return extractSymbolsByRegex(filePath, relativePath, content);
+    }
+
+    if (!parserReady || !parserC || !parserCpp || !TreeSitter) { return []; }
 
     const ext = path.extname(filePath).toLowerCase();
-    let lang: any;
+    let parser: any;
     let query: any;
 
     if (C_EXTENSIONS.has(ext)) {
-        lang = langC;
+        parser = parserC;
         query = queryC;
     } else if (CPP_EXTENSIONS.has(ext)) {
-        lang = langCpp;
+        parser = parserCpp;
         query = queryCpp;
     } else {
         return [];
     }
 
-    const parser = new ParserClass();
-    parser.setLanguage(lang);
+    // 复用持久 Parser。tree 一定要 delete() —— 不 delete 会让 WASM 堆
+    // 永久膨胀；但 parser 不能 delete，它要服务下一个文件。
     const tree = parser.parse(content);
     if (!tree) {
-        parser.delete();
         return [];
     }
 
@@ -133,107 +177,15 @@ export function parseSymbols(filePath: string, relativePath: string, content: st
     }
 
     tree.delete();
-    parser.delete();
+    // parser 不 delete：见 parserC/parserCpp 的注释。
     return symbols;
 }
 
-// ── Reusable parser API (for Worker thread reuse) ─────────────────────────────
-
-export interface ReusableParser {
-    parse(filePath: string, relativePath: string, content: string): SymbolEntry[];
-    dispose(): void;
-}
-
-/**
- * 在单个 worker 进程内,为 C 和 C++ 各持有一个常驻 ParserClass 实例,在该 worker
- * 的生命周期内反复复用。对比老版本 per-file `new ParserClass()` 的门面实现:
- *   - 33k 文件 sync 的实例化次数从 ~33000 降到 ~2(每个 worker 里各 1 C + 1 C++)
- *   - 消除 WASM native allocator 在 parseBatch 内的 churn 爆发 —— 这是调查
- *     "33k 文件 sync 中 VS Code 闪退" 时锁定的首要嫌疑
- *   - 只有 `tree` 仍然 per-file delete;parser 本体跨文件复用
- */
-export async function createReusableParser(extensionPath: string): Promise<ReusableParser> {
-    await initParser(extensionPath);
-
-    // 每种语言一个持久 parser,setLanguage 只做一次。
-    const parserC = new ParserClass();
-    parserC.setLanguage(langC);
-    const parserCpp = new ParserClass();
-    parserCpp.setLanguage(langCpp);
-
-    let disposed = false;
-
-    const parse = (filePath: string, relativePath: string, content: string): SymbolEntry[] => {
-        if (disposed || !parserReady) { return []; }
-
-        const ext = path.extname(filePath).toLowerCase();
-        let parser: any;
-        let query: any;
-        if (C_EXTENSIONS.has(ext)) {
-            parser = parserC;
-            query = queryC;
-        } else if (CPP_EXTENSIONS.has(ext)) {
-            parser = parserCpp;
-            query = queryCpp;
-        } else {
-            return [];
-        }
-
-        const tree = parser.parse(content);
-        if (!tree) { return []; }
-
-        try {
-            const lines = content.split('\n');
-            const symbols: SymbolEntry[] = [];
-            const matches = query.matches(tree.rootNode);
-
-            for (const match of matches) {
-                const nameCapture = match.captures.find((c: any) => c.name === 'name');
-                const defCapture = match.captures.find((c: any) => c.name === 'def');
-                if (!nameCapture || !defCapture) { continue; }
-
-                const parentType = defCapture.node.type;
-                const kind = NODE_TYPE_TO_KIND[parentType];
-                if (!kind) { continue; }
-
-                const startRow = nameCapture.node.startPosition.row;
-                const endRow = defCapture.node.endPosition.row;
-                const lineContent = startRow < lines.length ? lines[startRow] : '';
-
-                symbols.push({
-                    name: nameCapture.node.text,
-                    kind,
-                    filePath,
-                    relativePath,
-                    lineNumber: startRow + 1,
-                    endLineNumber: endRow + 1,
-                    column: nameCapture.node.startPosition.column,
-                    lineContent,
-                });
-            }
-            return symbols;
-        } finally {
-            // 只释放 tree;parser 留给下一个文件复用。
-            tree.delete();
-        }
-    };
-
-    return {
-        parse,
-        dispose(): void {
-            if (disposed) { return; }
-            disposed = true;
-            try { parserC.delete(); } catch { /* ignore */ }
-            try { parserCpp.delete(); } catch { /* ignore */ }
-        },
-    };
-}
-
-export function parseSymbolsWithParser(parser: ReusableParser, filePath: string, relativePath: string, content: string): SymbolEntry[] {
-    return parser.parse(filePath, relativePath, content);
-}
-
 export function disposeParser(): void {
+    parserC?.delete();
+    parserCpp?.delete();
+    parserC = null;
+    parserCpp = null;
     queryC?.delete();
     queryCpp?.delete();
     queryC = null;
@@ -241,5 +193,11 @@ export function disposeParser(): void {
     langC = null;
     langCpp = null;
     TreeSitter = null;
+    ParserClass = null;
     parserReady = false;
+}
+
+/** @internal 测试钩子：返回至今为止创建过的 Parser 实例数（initParser +2，其它为 0）。 */
+export function _getParserStatsForTest(): { parsersCreated: number } {
+    return { parsersCreated: parsersCreatedCount };
 }
