@@ -4,3 +4,4 @@ out/
 wasm/
 .sisearch/
 .worktrees/
+test/fixtures/**/.sisearch/
