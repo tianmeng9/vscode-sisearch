@@ -72,16 +72,20 @@ async function main(): Promise<void> {
                         stream: true,
                         macrosOnly,
                     });
-                    // onSymbol 直接 push 到 batch 级 symbols —— 5D 让 stream 函数自己
-                    // 不 buffer 整个文件的符号,每次 emit 立刻交出。
+                    // Phase 5H:stream 路径的符号 *不入索引* —— 主线程堆是根瓶颈。
+                    // 2026-04-21 实证:700 万符号 SymbolEntry 装进 InMemorySymbolIndex
+                    // 就是 1.7 GB,加上 name index + postMessage 克隆 → 2.5 GB 主线程 OOM。
+                    // 这些 1+ MB 文件全是机器生成的 AMD GPU 寄存器宏,用户实际搜它们的
+                    // 频率极低(grep 原文更合适);索引里保留 metadata 保证 sync 完整性
+                    // (知道文件在,不会重复 parse),symbols 直接丢弃不传回主线程。
+                    //
+                    // stream 函数仍然消费文件(用于统计 symbolCount 给 metadata),
+                    // 但 onSymbol 什么都不做 —— 避免 worker 内 symbols 数组增长。
                     let streamedCount = 0;
                     await extractSymbolsByRegexStream(file.absPath, file.relativePath, {
                         lineContentMode: 'empty',
                         macrosOnly,
-                        onSymbol: (entry) => {
-                            symbols.push(entry);
-                            streamedCount++;
-                        },
+                        onSymbol: () => { streamedCount++; },
                     });
                     symbolCount = streamedCount;
                 } else {
