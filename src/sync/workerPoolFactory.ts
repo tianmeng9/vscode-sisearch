@@ -54,9 +54,27 @@ interface BatchResultMessage {
     errors: string[];
 }
 
+/**
+ * Phase 5C-H:增量消息,每个文件处理完就发一条,避免 worker 跨文件累积。
+ * 主线程在 batchResult 到来之前 accumulate 所有 chunk,再 resolve 合并结果。
+ */
+interface FileChunkMessage {
+    type: 'fileChunk';
+    requestId: number;
+    symbols: ParseBatchResult['symbols'];
+    metadata: ParseBatchResult['metadata'];
+    errors: string[];
+}
+
+type WorkerMessage = BatchResultMessage | FileChunkMessage;
+
 interface PendingBatch {
     resolve(result: ParseBatchResult): void;
     reject(err: Error): void;
+    // chunk 累积器
+    symbols: ParseBatchResult['symbols'];
+    metadata: ParseBatchResult['metadata'];
+    errors: string[];
 }
 
 /**
@@ -80,12 +98,24 @@ export function createWorkerThreadPoolWorker(
     let disposed = false;
     let initError: Error | undefined;
 
-    worker.on('message', (msg: BatchResultMessage) => {
-        if (msg.type !== 'batchResult') { return; }
+    worker.on('message', (msg: WorkerMessage) => {
         const p = pending.get(msg.requestId);
         if (!p) { return; }
-        pending.delete(msg.requestId);
-        p.resolve({ symbols: msg.symbols, metadata: msg.metadata, errors: msg.errors });
+        if (msg.type === 'fileChunk') {
+            // 累积到 pending 槽,worker 侧已经 copy 过不持有了
+            if (msg.symbols.length) { p.symbols.push(...msg.symbols); }
+            if (msg.metadata.length) { p.metadata.push(...msg.metadata); }
+            if (msg.errors.length) { p.errors.push(...msg.errors); }
+            return;
+        }
+        if (msg.type === 'batchResult') {
+            // 批次结束:用累积的 chunk + 最后一条 batchResult 里可能的残留合并 resolve
+            pending.delete(msg.requestId);
+            if (msg.symbols.length) { p.symbols.push(...msg.symbols); }
+            if (msg.metadata.length) { p.metadata.push(...msg.metadata); }
+            if (msg.errors.length) { p.errors.push(...msg.errors); }
+            p.resolve({ symbols: p.symbols, metadata: p.metadata, errors: p.errors });
+        }
     });
 
     worker.on('error', err => {
@@ -111,7 +141,13 @@ export function createWorkerThreadPoolWorker(
 
             const requestId = nextRequestId++;
             return new Promise<ParseBatchResult>((resolve, reject) => {
-                pending.set(requestId, { resolve, reject });
+                pending.set(requestId, {
+                    resolve,
+                    reject,
+                    symbols: [],
+                    metadata: [],
+                    errors: [],
+                });
                 worker.postMessage({ type: 'parseBatch', requestId, files });
             });
         },

@@ -48,9 +48,31 @@ async function main(): Promise<void> {
     parentPort?.on('message', async (message: ParseBatchRequest) => {
         if (message.type !== 'parseBatch') { return; }
 
-        const symbols: ParseBatchResult['symbols'] = [];
-        const metadata: ParseBatchResult['metadata'] = [];
-        const errors: string[] = [];
+        // Phase 5C-H:per-file flush —— 不再跨文件累积。每个文件处理完立即
+        // postMessage 'fileChunk' 给主线程,然后清空本地数组让 GC 回收。
+        // 最后发一条 'batchResult' 作为批次完成信号(symbols/metadata/errors 都为空)。
+        // 这样 worker 堆永不持有超过"当前这个文件"的符号数据。
+        let symbols: ParseBatchResult['symbols'] = [];
+        let metadata: ParseBatchResult['metadata'] = [];
+        let errors: string[] = [];
+
+        // 超过这个大小就立即 flush,防止单个超大文件内部产物过多也堆积
+        // (虽然每文件处理完也会 flush,但大文件 emit 过程中内存还是峰值)
+        const flush = (): void => {
+            if (symbols.length === 0 && metadata.length === 0 && errors.length === 0) { return; }
+            parentPort?.postMessage({
+                type: 'fileChunk',
+                requestId: message.requestId,
+                symbols,
+                metadata,
+                errors,
+            });
+            // 关键:新建空数组,而不是 .length = 0 —— postMessage 的结构化克隆
+            // 已经把内容 copy 到了主线程,我们这里丢掉引用让 V8 立刻回收旧数组。
+            symbols = [];
+            metadata = [];
+            errors = [];
+        };
 
         for (const file of message.files) {
             appendDiag(DIAG_LOG_PATH, 'file:entered', { relativePath: file.relativePath });
@@ -95,21 +117,27 @@ async function main(): Promise<void> {
                     size: stat.size,
                     symbolCount: parsed.length,
                 });
+                // 每文件 flush —— worker 堆立即释放本文件符号
+                flush();
             } catch (err) {
                 appendDiag(DIAG_LOG_PATH, 'file:error', {
                     relativePath: file.relativePath,
                     err: err instanceof Error ? err.message : String(err),
                 });
                 errors.push(`${file.relativePath}: ${err instanceof Error ? err.message : String(err)}`);
+                // 错误也立即 flush
+                flush();
             }
         }
 
+        // 批次收尾 —— 任何未 flush 的残留 + 批次结束信号
+        flush();
         parentPort?.postMessage({
             type: 'batchResult',
             requestId: message.requestId,
-            symbols,
-            metadata,
-            errors,
+            symbols: [],
+            metadata: [],
+            errors: [],
         });
     });
 }
