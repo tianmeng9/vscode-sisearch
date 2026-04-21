@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { decodeMessagePackMulti, encodeMessagePack } from './codec';
 import { shardFileName, shardForPath } from './shardStrategy';
+import { ShardStreamWriter } from './shardStreamWriter';
 import type { SymbolEntry, IndexedFile } from '../index/indexTypes';
 
 export interface IndexSnapshot {
@@ -25,7 +26,10 @@ interface LegacyIndex {
 }
 
 export class StorageManager {
-    constructor(private options: { workspaceRoot: string; shardCount: number }) {}
+    private readonly chunkThreshold: number;
+    constructor(private options: { workspaceRoot: string; shardCount: number; chunkThreshold?: number }) {
+        this.chunkThreshold = options.chunkThreshold ?? 512;
+    }
 
     private get indexDir(): string {
         return path.join(this.options.workspaceRoot, '.sisearch');
@@ -149,5 +153,14 @@ export class StorageManager {
                 fileMetadata.set(entry.relativePath, entry.metadata);
             }
         }
+    }
+
+    openStreamWriter(): ShardStreamWriter {
+        fs.mkdirSync(this.shardsDir, { recursive: true });
+        return new ShardStreamWriter({
+            shardsDir: this.shardsDir,
+            shardCount: this.options.shardCount,
+            chunkThreshold: this.chunkThreshold,
+        });
     }
 }

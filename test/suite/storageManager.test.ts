@@ -5,6 +5,7 @@ import * as path from 'path';
 import { StorageManager } from '../../src/storage/storageManager';
 import { encodeMessagePack } from '../../src/storage/codec';
 import { shardFileName } from '../../src/storage/shardStrategy';
+import { ShardStreamWriter } from '../../src/storage/shardStreamWriter';
 
 suite('storageManager', () => {
     test('saveFull writes shards and load rebuilds snapshot', async () => {
@@ -223,5 +224,20 @@ suite('StorageManager.load chunked format', () => {
         const mgr = new StorageManager({ workspaceRoot: root, shardCount: 16 });
         const snap = await mgr.load();
         assert.strictEqual(snap.fileMetadata.size, 0);
+    });
+});
+
+suite('StorageManager.openStreamWriter', () => {
+    test('returns writer writing into .sisearch/shards with matching shardCount', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smwriter-'));
+        const mgr = new StorageManager({ workspaceRoot: root, shardCount: 4, chunkThreshold: 1 });
+        const writer = mgr.openStreamWriter();
+        assert.ok(writer instanceof ShardStreamWriter);
+
+        writer.add(2, { relativePath: 'x.c', symbols: [], metadata: { relativePath: 'x.c', mtime: 1, size: 1, symbolCount: 0 } });
+        writer.flushAll();
+        writer.close();
+
+        assert.deepStrictEqual(fs.readdirSync(path.join(root, '.sisearch', 'shards')), ['02.msgpack']);
     });
 });
