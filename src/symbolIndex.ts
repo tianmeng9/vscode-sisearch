@@ -116,7 +116,19 @@ export class SymbolIndex {
         const orchestrator = new SyncOrchestrator({
             scanFiles: async (root) => this.scanWorkspace(root, extensions, excludePatterns, includePaths, token),
             classify: async (input) => classifyBatches(input),
-            workerPool: { parse: (files, onBatchComplete) => this.runParse(files, workspaceRoot, onBatchComplete) },
+            workerPool: {
+                parse: async (files, onBatchResult, onBatchComplete) => {
+                    if (this.workerPool) {
+                        await this.workerPool.parse(files, onBatchResult, onBatchComplete);
+                        return;
+                    }
+                    // Fallback: single-batch emit
+                    const result = await this.parseInProcess(files, workspaceRoot, onBatchComplete);
+                    if (result.symbols.length + result.metadata.length + result.errors.length > 0) {
+                        await onBatchResult(result);
+                    }
+                },
+            },
             index: {
                 update: (file, symbols) => this.inner.update(file, symbols),
                 remove: file => {
@@ -277,7 +289,17 @@ export class SymbolIndex {
         onBatchComplete?: (done: number, total: number, lastFile?: string) => void,
     ): Promise<ParseBatchResult> {
         if (this.workerPool) {
-            return this.workerPool.parse(files, onBatchComplete);
+            const aggregated: ParseBatchResult = { symbols: [], metadata: [], errors: [] };
+            await this.workerPool.parse(
+                files,
+                async (batch) => {
+                    for (const s of batch.symbols) { aggregated.symbols.push(s); }
+                    for (const m of batch.metadata) { aggregated.metadata.push(m); }
+                    for (const e of batch.errors) { aggregated.errors.push(e); }
+                },
+                onBatchComplete,
+            );
+            return aggregated;
         }
         return this.parseInProcess(files, workspaceRoot, onBatchComplete);
     }

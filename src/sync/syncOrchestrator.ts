@@ -16,8 +16,9 @@ export interface SyncDeps {
     workerPool: {
         parse(
             files: Array<{ absPath: string; relativePath: string }>,
+            onBatchResult: (result: ParseBatchResult) => Promise<void>,
             onBatchComplete?: (done: number, total: number, lastFile?: string) => void,
-        ): Promise<ParseBatchResult>;
+        ): Promise<void>;
     };
     index: {
         update(file: string, symbols: SymbolEntry[]): void;
@@ -81,23 +82,20 @@ export class SyncOrchestrator {
         // Parse changed/new files via worker pool
         if (classified.toProcess.length > 0) {
             this.deps.onProgress?.('parsing', 0, classified.toProcess.length);
-            const parsed = await this.deps.workerPool.parse(
+            await this.deps.workerPool.parse(
                 classified.toProcess.map(f => ({ absPath: f.absPath, relativePath: f.relativePath })),
+                async (batch) => {
+                    const grouped = groupParseResult(batch);
+                    this.deps.index.applyMetadata(batch.metadata);
+                    for (const [file, symbols] of grouped) {
+                        this.deps.index.update(file, symbols);
+                        dirtyPaths.add(file);
+                    }
+                },
                 (done, total, lastFile) => {
                     this.deps.onProgress?.('parsing', done, total, lastFile);
                 },
             );
-
-            // Group symbols by file and apply to index(共享 helper,与 syncDirty 路径一致)
-            const grouped = groupParseResult(parsed);
-
-            // 先回写 per-file 元数据,随后才 index.update —— 保证 update 时元数据已就绪
-            this.deps.index.applyMetadata(parsed.metadata);
-
-            for (const [file, symbols] of grouped) {
-                this.deps.index.update(file, symbols);
-                dirtyPaths.add(file);
-            }
         }
 
         if (cancellationToken?.isCancellationRequested) { return; }
