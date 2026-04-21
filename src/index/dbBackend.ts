@@ -67,6 +67,17 @@ export class DbBackend {
     openOrInit(): void {
         if (this.db) { return; }
         const isMemory = this.dbPath === ':memory:';
+        if (!isMemory && fs.existsSync(this.dbPath)) {
+            // 已有文件先 quick_check,损坏就 quarantine
+            try {
+                const probe = new Database(this.dbPath, { readonly: true });
+                const r = probe.pragma('quick_check', { simple: true });
+                probe.close();
+                if (r !== 'ok') { this.quarantineAndReplace(); }
+            } catch {
+                this.quarantineAndReplace();
+            }
+        }
         if (!isMemory) {
             fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
         }
@@ -78,6 +89,34 @@ export class DbBackend {
         this.db.pragma('foreign_keys = ON');
         this.db.exec(DDL);
         this.ensureMeta();
+        this.verifySchemaVersion();
+    }
+
+    integrityCheck(): string {
+        if (!this.db) { return 'not opened'; }
+        return this.db.pragma('integrity_check', { simple: true }) as string;
+    }
+
+    private quarantineAndReplace(): void {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const quarantinePath = `${this.dbPath}.corrupt-${ts}`;
+        try { fs.renameSync(this.dbPath, quarantinePath); } catch { /* ignore */ }
+        try { fs.unlinkSync(this.dbPath + '-wal'); } catch { /* ignore */ }
+        try { fs.unlinkSync(this.dbPath + '-shm'); } catch { /* ignore */ }
+    }
+
+    private verifySchemaVersion(): void {
+        const version = this.getSchemaVersion();
+        if (version > CURRENT_SCHEMA_VERSION) {
+            const msg = `sisearch DB schema version ${version} is newer than this extension supports (${CURRENT_SCHEMA_VERSION}). ` +
+                        `Please upgrade the extension or delete .sisearch/index.sqlite and re-sync.`;
+            throw new Error(msg);
+        }
+        // 版本更低(或 0)静默重建 —— DDL 的 CREATE TABLE IF NOT EXISTS 已兼容,需要补 meta
+        if (version < CURRENT_SCHEMA_VERSION) {
+            this.db!.exec('DELETE FROM symbols; DELETE FROM files;');
+            this.db!.prepare("UPDATE meta SET value=? WHERE key='schema_version'").run(String(CURRENT_SCHEMA_VERSION));
+        }
     }
 
     close(): void {
