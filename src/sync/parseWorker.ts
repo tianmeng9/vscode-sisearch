@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import { parentPort, workerData } from 'worker_threads';
 import { initParser, parseSymbols } from '../symbolParser';
+import { extractSymbolsByRegexStream } from '../largeFileParserStream';
 import type { ParseBatchResult } from './workerPool';
 import { appendDiag, resolveDiagLogPath } from './workerDiag';
 
@@ -54,18 +55,31 @@ async function main(): Promise<void> {
         for (const file of message.files) {
             appendDiag(DIAG_LOG_PATH, 'file:entered', { relativePath: file.relativePath });
             try {
-                const content = fs.readFileSync(file.absPath, 'utf-8');
-                appendDiag(DIAG_LOG_PATH, 'file:readDone', {
-                    relativePath: file.relativePath,
-                    contentLength: content.length,
-                });
-                const parsed = parseSymbols(file.absPath, file.relativePath, content, { maxBytes });
+                // Phase 5B 关键:先 statSync 拿 size。若 size >= maxBytes 就走流式路径,
+                // 完全跳过 fs.readFileSync —— 对 14 MB AMD GPU 寄存器头,整读会在 Node
+                // Buffer/external memory 层打爆,Phase 4 的闸门在整读之后来不及。
+                const stat = fs.statSync(file.absPath);
+                let parsed;
+                if (maxBytes > 0 && stat.size >= maxBytes) {
+                    appendDiag(DIAG_LOG_PATH, 'file:readDone', {
+                        relativePath: file.relativePath,
+                        contentLength: stat.size,
+                        stream: true,
+                    });
+                    parsed = await extractSymbolsByRegexStream(file.absPath, file.relativePath);
+                } else {
+                    const content = fs.readFileSync(file.absPath, 'utf-8');
+                    appendDiag(DIAG_LOG_PATH, 'file:readDone', {
+                        relativePath: file.relativePath,
+                        contentLength: content.length,
+                    });
+                    parsed = parseSymbols(file.absPath, file.relativePath, content, { maxBytes });
+                }
                 appendDiag(DIAG_LOG_PATH, 'file:parseDone', {
                     relativePath: file.relativePath,
                     symbolCount: parsed.length,
                 });
                 symbols.push(...parsed);
-                const stat = fs.statSync(file.absPath);
                 metadata.push({
                     relativePath: file.relativePath,
                     mtime: stat.mtimeMs,
