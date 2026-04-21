@@ -91,4 +91,25 @@ suite('symbolParser parser reuse', () => {
         assert.ok(cppSyms.some(s => s.name === 'Widget'));
         assert.ok(cppSyms.some(s => s.name === 'ns'));
     });
+
+    // Phase 3 压测:把规模推到 5k 文件,用 C/C++ 混合。
+    // 这是 33k-file 仓库规模的 ~1/7,足以捕获任何 "每 N 文件泄露一个 Parser"
+    // 或 "累计 WASM 分配未释放" 的回归。
+    // 如果 Phase 1 退化成 per-file new Parser(),计数会直接冲到 5000+。
+    test('stress: 5000 mixed-language parses still reuse <=2 Parsers', function () {
+        this.timeout(30_000); // WASM parse 慢,给足预算
+
+        const statsBefore = _getParserStatsForTest();
+        for (let i = 0; i < 5000; i++) {
+            if (i % 2 === 0) {
+                parseSymbols(`/w/stress${i}.c`, `stress${i}.c`, SAMPLE_C);
+            } else {
+                parseSymbols(`/w/stress${i}.cpp`, `stress${i}.cpp`, SAMPLE_CPP);
+            }
+        }
+        const statsAfter = _getParserStatsForTest();
+        const delta = statsAfter.parsersCreated - statsBefore.parsersCreated;
+        assert.strictEqual(delta, 0,
+            `5000 parses must reuse existing Parser instances; got ${delta} new Parser(s)`);
+    });
 });

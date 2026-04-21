@@ -176,6 +176,40 @@ suite('workerPool', () => {
         await pool.dispose();
     });
 
+    test('stress: 10 consecutive recycles keep pool usable', async () => {
+        // 模拟用户反复 cancel→resync 10 次。每次 recycle 后 pool 必须仍能 parse,
+        // 并且 worker 构造与销毁次数守恒。
+        let constructed = 0;
+        let disposed = 0;
+        const pool = new WorkerPool({
+            size: 2,
+            workerFactory: async () => {
+                constructed++;
+                return {
+                    parseBatch: makeStubWorker().parseBatch,
+                    dispose: async () => { disposed++; },
+                };
+            },
+        });
+        await pool.parse([], async () => {}); // ensure initial factory calls
+        assert.strictEqual(constructed, 2);
+
+        for (let i = 0; i < 10; i++) {
+            await pool.recycle();
+            // 每轮后都能正常 parse。
+            const files = [{ absPath: `/w/r${i}.c`, relativePath: `r${i}.c` }];
+            const batches: ParseBatchResult[] = [];
+            await pool.parse(files, async (r) => { batches.push(r); });
+            assert.strictEqual(batches.length, 1, `round ${i}: parse must work after recycle`);
+        }
+
+        assert.strictEqual(constructed, 2 + 10 * 2, '每次 recycle 构造 2 个新 worker');
+        assert.strictEqual(disposed, 10 * 2, '每次 recycle 销毁 2 个旧 worker');
+
+        await pool.dispose();
+        assert.strictEqual(disposed, 10 * 2 + 2, 'final dispose cleans up current 2 workers');
+    });
+
     test('recycle() disposes old workers before replacing', async () => {
         const disposed: number[] = [];
         let id = 0;
