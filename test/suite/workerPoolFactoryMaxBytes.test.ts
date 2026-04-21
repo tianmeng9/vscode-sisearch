@@ -56,4 +56,26 @@ suite('workerPoolFactory maxBytes wiring', () => {
         });
         assert.strictEqual(spy.ctorCalls.length, 1);
     });
+
+    test('sets resourceLimits.maxOldGenerationSizeMb to at least 512 MB', () => {
+        // Phase 5A:真实环境中 dcn_*_sh_mask.h(24 MB)readFileSync 后 UTF-16 进 V8
+        // 约 48 MB + split('\n') 十几万行对象,加上正则 match 池,峰值会吃 200+ MB。
+        // Node worker_threads 默认 old space 远小于这个(~40 MB 起),直接 OOM abort。
+        // 必须通过 resourceLimits.maxOldGenerationSizeMb 抬高 worker 的 V8 堆上限,
+        // 否则即使 Phase 4 闸门拦住 tree-sitter,正则回退本身也会打爆 worker 堆。
+        const spy = makeSpy();
+        createWorkerThreadPoolWorker('/fake/parseWorker.js', '/ext/root', {
+            WorkerCtor: spy.WorkerCtor,
+        });
+        const { options } = spy.ctorCalls[0];
+        assert.ok(options.resourceLimits, 'Worker options must include resourceLimits');
+        assert.ok(
+            typeof options.resourceLimits.maxOldGenerationSizeMb === 'number',
+            'maxOldGenerationSizeMb must be a number',
+        );
+        assert.ok(
+            options.resourceLimits.maxOldGenerationSizeMb >= 512,
+            `maxOldGenerationSizeMb must be >= 512 (got ${options.resourceLimits.maxOldGenerationSizeMb})`,
+        );
+    });
 });
