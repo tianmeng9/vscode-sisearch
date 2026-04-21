@@ -72,6 +72,13 @@ const BRACE_LINE = /^[ \t]*\{[ \t]*$/;
 export interface StreamParseOptions {
     lineContentMode?: 'empty' | 'full';
     macrosOnly?: boolean;
+    /**
+     * Phase 5D:符号级流式输出。若提供,stream 函数不再把符号累积进本地数组
+     * (返回空数组),而是每产出一个 SymbolEntry 就调 onSymbol 一次。
+     * parseWorker 用这个 callback 做按量 flush —— 14 MB macrosOnly 单文件不再
+     * 在返回那一刻 buffer 15 万 entry + postMessage 克隆 double 持有。
+     */
+    onSymbol?: (entry: SymbolEntry) => void;
 }
 
 export async function extractSymbolsByRegexStream(
@@ -81,15 +88,21 @@ export async function extractSymbolsByRegexStream(
 ): Promise<SymbolEntry[]> {
     const lineContentMode = options.lineContentMode ?? 'empty';
     const macrosOnly = options.macrosOnly ?? false;
+    const onSymbol = options.onSymbol;
     const symbols: SymbolEntry[] = [];
-    const seen = new Set<string>();
+    // macrosOnly 路径只跑单条 #define 规则,不可能同行重复发射 —— seen 不必用,
+    // 省 15 万条 dedup key × ~80 B = 12+ MB 常驻堆(对 14 MB mask header 尤其关键)。
+    // 非 macrosOnly 仍然保留去重,避免 struct 和 function 在同一行互相命中。
+    const seen: Set<string> | null = macrosOnly ? null : new Set();
 
     const emit = (name: string, kind: SymbolKind, lineNumber: number, column: number, lineContent: string) => {
         if (KEYWORDS.has(name)) { return; }
-        const dedupKey = `${lineNumber}:${name}:${kind}`;
-        if (seen.has(dedupKey)) { return; }
-        seen.add(dedupKey);
-        symbols.push({
+        if (seen) {
+            const dedupKey = `${lineNumber}:${name}:${kind}`;
+            if (seen.has(dedupKey)) { return; }
+            seen.add(dedupKey);
+        }
+        const entry: SymbolEntry = {
             name,
             kind,
             filePath,
@@ -98,7 +111,12 @@ export async function extractSymbolsByRegexStream(
             endLineNumber: lineNumber,
             column,
             lineContent: lineContentMode === 'full' ? lineContent : '',
-        });
+        };
+        if (onSymbol) {
+            onSymbol(entry);
+        } else {
+            symbols.push(entry);
+        }
     };
 
     await new Promise<void>((resolve, reject) => {

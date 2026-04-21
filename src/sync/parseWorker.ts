@@ -84,8 +84,6 @@ async function main(): Promise<void> {
                 let parsed;
                 if (maxBytes > 0 && stat.size >= maxBytes) {
                     // 超巨文件(>= 10 MB)启用 macrosOnly —— AMD GPU 寄存器 header 级别。
-                    // 非 macro 符号(struct/function)在这类机器生成文件里几乎不存在,
-                    // 跳过它们能把 seen Set 和 symbols 数组规模进一步压缩。
                     const HUGE_FILE_THRESHOLD = 10 * 1024 * 1024;
                     const macrosOnly = stat.size >= HUGE_FILE_THRESHOLD;
                     appendDiag(DIAG_LOG_PATH, 'file:readDone', {
@@ -94,10 +92,49 @@ async function main(): Promise<void> {
                         stream: true,
                         macrosOnly,
                     });
-                    parsed = await extractSymbolsByRegexStream(file.absPath, file.relativePath, {
+                    // Phase 5D:符号级流式 —— 不等 stream 结束,每 N 个符号就 flush。
+                    // 单文件 15 万符号不会瞬时 buffer + postMessage 克隆 double 持有。
+                    const FLUSH_EVERY = 2000;
+                    let streamedCount = 0;
+                    let metadataPushed = false;
+                    await extractSymbolsByRegexStream(file.absPath, file.relativePath, {
                         lineContentMode: 'empty',
                         macrosOnly,
+                        onSymbol: (entry) => {
+                            symbols.push(entry);
+                            streamedCount++;
+                            // 首个符号出现时,把这个文件的 metadata 预先登记,避免
+                            // 大文件的 metadata 跟 symbols 分离(主线程按 fileChunk 合并没问题)
+                            if (!metadataPushed) {
+                                metadata.push({
+                                    relativePath: file.relativePath,
+                                    mtime: stat.mtimeMs,
+                                    size: stat.size,
+                                    symbolCount: 0, // 暂填 0,最后更新 —— 但 flush 中已发走
+                                });
+                                metadataPushed = true;
+                            }
+                            if (symbols.length >= FLUSH_EVERY) { flush(); }
+                        },
                     });
+                    // 伪装 parsed = stream 产出数量(后续 parseDone 日志用)
+                    parsed = { length: streamedCount } as ParseBatchResult['symbols'];
+                    // stream 模式下 metadata 已经在 onSymbol 首次被推;symbols 由 onSymbol 推。
+                    // 如果 streamedCount=0(文件没命中任何规则),仍要补一条 metadata。
+                    if (streamedCount === 0) {
+                        metadata.push({
+                            relativePath: file.relativePath,
+                            mtime: stat.mtimeMs,
+                            size: stat.size,
+                            symbolCount: 0,
+                        });
+                    }
+                    appendDiag(DIAG_LOG_PATH, 'file:parseDone', {
+                        relativePath: file.relativePath,
+                        symbolCount: streamedCount,
+                    });
+                    flush();
+                    continue; // 跳过下面的非-stream 收尾路径
                 } else {
                     const content = fs.readFileSync(file.absPath, 'utf-8');
                     appendDiag(DIAG_LOG_PATH, 'file:readDone', {

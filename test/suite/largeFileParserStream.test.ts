@@ -130,6 +130,18 @@ suite('largeFileParserStream', () => {
         fs.rmSync(path.dirname(p), { recursive: true, force: true });
     });
 
+    test('onSymbol callback receives every symbol; return array is empty', async () => {
+        const content = ['#define A 1', '#define B 2', '#define C 3'].join('\n');
+        const p = writeFixture(content);
+        const received: string[] = [];
+        const returned = await extractSymbolsByRegexStream(p, 'fixture.h', {
+            onSymbol: (e: any) => received.push(e.name),
+        });
+        assert.deepStrictEqual(received, ['A', 'B', 'C']);
+        assert.strictEqual(returned.length, 0, 'returned array must be empty in onSymbol mode');
+        fs.rmSync(path.dirname(p), { recursive: true, force: true });
+    });
+
     test('handles 14 MB file without buffering whole content', async () => {
         // 模拟 nbio_6_1_sh_mask.h 级别:14 MB,纯 #define 行
         // 不测峰值 RSS(Node 测 RSS 不稳),只测能跑完 + 产出数量合理。
