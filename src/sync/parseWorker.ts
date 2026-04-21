@@ -15,6 +15,9 @@ interface ParseBatchRequest {
 
 async function main(): Promise<void> {
     await initParser(workerData.extensionPath as string);
+    // maxBytes 由主线程从 VS Code 配置读取并通过 workerData 透传;0 = 禁用(始终
+    // 走 tree-sitter,承担 WASM 爆堆风险),正整数 = 超阈值走 largeFileParser 正则回退。
+    const maxBytes = typeof workerData.maxBytes === 'number' ? (workerData.maxBytes as number) : 0;
 
     parentPort?.on('message', async (message: ParseBatchRequest) => {
         if (message.type !== 'parseBatch') { return; }
@@ -26,7 +29,7 @@ async function main(): Promise<void> {
         for (const file of message.files) {
             try {
                 const content = fs.readFileSync(file.absPath, 'utf-8');
-                const parsed = parseSymbols(file.absPath, file.relativePath, content);
+                const parsed = parseSymbols(file.absPath, file.relativePath, content, { maxBytes });
                 symbols.push(...parsed);
                 const stat = fs.statSync(file.absPath);
                 metadata.push({
