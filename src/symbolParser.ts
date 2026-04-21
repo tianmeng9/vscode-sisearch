@@ -1,5 +1,20 @@
 import * as path from 'path';
 import { SymbolEntry, SymbolKind } from './types';
+import { extractSymbolsByRegex } from './largeFileParser';
+
+/**
+ * parseSymbols 选项。
+ *
+ * maxBytes:文件字节数阈值,超过则走 largeFileParser 正则回退,不进 tree-sitter。
+ *   - 0 或 undefined:不启用阈值(始终走 tree-sitter) —— 用户明示承担 WASM 爆堆风险。
+ *   - 正整数:content.length >= maxBytes 时走回退。
+ *
+ * 背景:web-tree-sitter WASM 线性内存硬上限 2 GB。AMD GPU 驱动 24 MB 级自动生成
+ * 头文件一次 parse 会打穿内存上限并 process.abort() —— 整个 extension host 挂掉。
+ */
+export interface ParseOptions {
+    maxBytes?: number;
+}
 
 // web-tree-sitter 0.21+ 是 ESM-only，VS Code 扩展编译为 CJS，
 // TypeScript 会把 import() 降级为 require()，所以用 Function 绕过。
@@ -96,7 +111,19 @@ export async function initParser(extensionPath: string): Promise<void> {
     parserReady = true;
 }
 
-export function parseSymbols(filePath: string, relativePath: string, content: string): SymbolEntry[] {
+export function parseSymbols(
+    filePath: string,
+    relativePath: string,
+    content: string,
+    options?: ParseOptions,
+): SymbolEntry[] {
+    // 大文件闸门 —— 在任何 tree-sitter 调用之前拦截。maxBytes>0 且 content 超阈值则
+    // 不走 parser.parse(),直接交给 O(n) 正则回退,避免 WASM 线性内存爆堆 abort()。
+    const maxBytes = options?.maxBytes ?? 0;
+    if (maxBytes > 0 && content.length >= maxBytes) {
+        return extractSymbolsByRegex(filePath, relativePath, content);
+    }
+
     if (!parserReady || !parserC || !parserCpp || !TreeSitter) { return []; }
 
     const ext = path.extname(filePath).toLowerCase();
