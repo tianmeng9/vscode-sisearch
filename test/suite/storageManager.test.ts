@@ -241,3 +241,28 @@ suite('StorageManager.openStreamWriter', () => {
         assert.deepStrictEqual(fs.readdirSync(path.join(root, '.sisearch', 'shards')), ['02.msgpack']);
     });
 });
+
+suite('StorageManager.saveFull / saveDirty through writer', () => {
+    test('saveFull produces files readable by load() with all entries', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sfsw-'));
+        const mgr = new StorageManager({ workspaceRoot: root, shardCount: 4, chunkThreshold: 1 });
+        const snapshot = {
+            symbolsByFile: new Map([
+                ['a.c', []],
+                ['b.c', []],
+                ['c.c', []],
+            ]),
+            fileMetadata: new Map([
+                ['a.c', { relativePath: 'a.c', mtime: 1, size: 1, symbolCount: 0 }],
+                ['b.c', { relativePath: 'b.c', mtime: 2, size: 2, symbolCount: 0 }],
+                ['c.c', { relativePath: 'c.c', mtime: 3, size: 3, symbolCount: 0 }],
+            ]),
+        };
+        await mgr.saveFull(snapshot);
+        const back = await mgr.load();
+        assert.strictEqual(back.fileMetadata.size, 3);
+        assert.strictEqual(back.fileMetadata.has('a.c'), true);
+        assert.strictEqual(back.fileMetadata.has('b.c'), true);
+        assert.strictEqual(back.fileMetadata.has('c.c'), true);
+    });
+});

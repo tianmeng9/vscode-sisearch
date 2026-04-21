@@ -3,7 +3,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { decodeMessagePackMulti, encodeMessagePack } from './codec';
+import { decodeMessagePackMulti } from './codec';
 import { shardFileName, shardForPath } from './shardStrategy';
 import { ShardStreamWriter } from './shardStreamWriter';
 import type { SymbolEntry, IndexedFile } from '../index/indexTypes';
@@ -40,17 +40,31 @@ export class StorageManager {
     }
 
     async saveFull(snapshot: IndexSnapshot): Promise<void> {
+        // Full save = truncate existing shards then stream-write. Truncate prevents
+        // stale appended chunks from previous runs contaminating the result.
         fs.mkdirSync(this.shardsDir, { recursive: true });
-        const shardBuckets = this.bucketizeShards(snapshot);
         for (let i = 0; i < this.options.shardCount; i++) {
-            this.writeShard(i, shardBuckets.get(i) ?? []);
+            const p = path.join(this.shardsDir, shardFileName(i));
+            if (fs.existsSync(p)) { fs.truncateSync(p, 0); }
+        }
+        const writer = this.openStreamWriter();
+        try {
+            for (const [relativePath, symbols] of snapshot.symbolsByFile) {
+                const shard = shardForPath(relativePath, this.options.shardCount);
+                const meta = snapshot.fileMetadata.get(relativePath)
+                    ?? { relativePath, mtime: 0, size: 0, symbolCount: symbols.length };
+                writer.add(shard, { relativePath, symbols, metadata: meta });
+            }
+            writer.flushAll();
+        } finally {
+            writer.close();
         }
     }
 
     /**
-     * 只重写受 dirtyPaths 影响的 shard。调用方负责确保 snapshot 反映的是
-     * 最新全量状态（dirtyPaths 中的删除项应已从 snapshot 里移除，新增/修改
-     * 项应已写入 snapshot）。
+     * 只重写受 dirtyPaths 影响的 shard:先把这些 shard 从磁盘全量读回,
+     * 应用 snapshot 里对应的最新内容(删除项 snapshot 里已无),
+     * 然后 truncate + stream-write 这些 shard。
      */
     async saveDirty(snapshot: IndexSnapshot, dirtyPaths: Set<string>): Promise<void> {
         if (dirtyPaths.size === 0) { return; }
@@ -61,28 +75,33 @@ export class StorageManager {
             dirtyShards.add(shardForPath(p, this.options.shardCount));
         }
 
-        // 重新分桶整个 snapshot,但只写 dirtyShards
-        const shardBuckets = this.bucketizeShards(snapshot);
-        for (const shard of dirtyShards) {
-            this.writeShard(shard, shardBuckets.get(shard) ?? []);
-        }
-    }
-
-    private bucketizeShards(snapshot: IndexSnapshot): Map<number, ShardEntry[]> {
-        const shardBuckets = new Map<number, ShardEntry[]>();
+        // 对每个 dirtyShard 的全量内容 = snapshot 里所有映射到该 shard 的文件
+        const entriesByShard = new Map<number, Array<{ relativePath: string; symbols: SymbolEntry[]; metadata: IndexedFile }>>();
         for (const [relativePath, symbols] of snapshot.symbolsByFile) {
             const shard = shardForPath(relativePath, this.options.shardCount);
-            const meta = snapshot.fileMetadata.get(relativePath) ?? { relativePath, mtime: 0, size: 0, symbolCount: symbols.length };
-            const bucket = shardBuckets.get(shard) ?? [];
-            bucket.push({ relativePath, symbols, metadata: meta });
-            shardBuckets.set(shard, bucket);
+            if (!dirtyShards.has(shard)) { continue; }
+            const meta = snapshot.fileMetadata.get(relativePath)
+                ?? { relativePath, mtime: 0, size: 0, symbolCount: symbols.length };
+            const list = entriesByShard.get(shard) ?? [];
+            list.push({ relativePath, symbols, metadata: meta });
+            entriesByShard.set(shard, list);
         }
-        return shardBuckets;
-    }
 
-    private writeShard(index: number, bucket: ShardEntry[]): void {
-        const filePath = path.join(this.shardsDir, shardFileName(index));
-        fs.writeFileSync(filePath, Buffer.from(encodeMessagePack(bucket)));
+        // Truncate each dirty shard then stream-write its entries
+        for (const shard of dirtyShards) {
+            const p = path.join(this.shardsDir, shardFileName(shard));
+            if (fs.existsSync(p)) { fs.truncateSync(p, 0); }
+        }
+
+        const writer = this.openStreamWriter();
+        try {
+            for (const [shard, entries] of entriesByShard) {
+                for (const entry of entries) { writer.add(shard, entry); }
+            }
+            writer.flushAll();
+        } finally {
+            writer.close();
+        }
     }
 
     async load(): Promise<IndexSnapshot> {
