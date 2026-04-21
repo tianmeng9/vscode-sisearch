@@ -28,7 +28,11 @@ interface LegacyIndex {
 export class StorageManager {
     private readonly chunkThreshold: number;
     constructor(private options: { workspaceRoot: string; shardCount: number; chunkThreshold?: number }) {
-        this.chunkThreshold = options.chunkThreshold ?? 512;
+        // Phase 5F:512 对 AMD GPU 驱动这种含 10+ MB 寄存器头、单文件 15 万符号的
+        // 仓库太大 —— bucket flush 时一次 encodeMessagePack 要序列化 100 万级符号,
+        // 峰值 Buffer 几百 MB。降到 128 让 bucket 更频繁 flush,单次 encode 规模 ÷ 4。
+        // 对普通仓库影响几乎没有(小文件几乎立即填不满 bucket,flushAll 会兜底)。
+        this.chunkThreshold = options.chunkThreshold ?? 128;
     }
 
     private get indexDir(): string {
@@ -75,28 +79,26 @@ export class StorageManager {
             dirtyShards.add(shardForPath(p, this.options.shardCount));
         }
 
-        // 对每个 dirtyShard 的全量内容 = snapshot 里所有映射到该 shard 的文件
-        const entriesByShard = new Map<number, Array<{ relativePath: string; symbols: SymbolEntry[]; metadata: IndexedFile }>>();
-        for (const [relativePath, symbols] of snapshot.symbolsByFile) {
-            const shard = shardForPath(relativePath, this.options.shardCount);
-            if (!dirtyShards.has(shard)) { continue; }
-            const meta = snapshot.fileMetadata.get(relativePath)
-                ?? { relativePath, mtime: 0, size: 0, symbolCount: symbols.length };
-            const list = entriesByShard.get(shard) ?? [];
-            list.push({ relativePath, symbols, metadata: meta });
-            entriesByShard.set(shard, list);
-        }
-
-        // Truncate each dirty shard then stream-write its entries
+        // Truncate each dirty shard FIRST so writer.add 追加的是干净文件。
         for (const shard of dirtyShards) {
             const p = path.join(this.shardsDir, shardFileName(shard));
             if (fs.existsSync(p)) { fs.truncateSync(p, 0); }
         }
 
+        // Phase 5F:流式填入 writer,不再先建中间 entriesByShard Map。
+        // writer 的 chunkThreshold bucket 到达阈值就 flush,内存上限 = 单 shard
+        // bucket(512 entries),不是"全量 dirty shard × 所有文件"。
+        // 2026-04-21 26k 文件 sync 时主线程堆打到 3.4 GB,就是因为 entriesByShard
+        // 把所有 symbols 引用结构都堆在一张 map 里等,加上 encodeMessagePack 的
+        // Buffer 开销,直接 OOM。
         const writer = this.openStreamWriter();
         try {
-            for (const [shard, entries] of entriesByShard) {
-                for (const entry of entries) { writer.add(shard, entry); }
+            for (const [relativePath, symbols] of snapshot.symbolsByFile) {
+                const shard = shardForPath(relativePath, this.options.shardCount);
+                if (!dirtyShards.has(shard)) { continue; }
+                const meta = snapshot.fileMetadata.get(relativePath)
+                    ?? { relativePath, mtime: 0, size: 0, symbolCount: symbols.length };
+                writer.add(shard, { relativePath, symbols, metadata: meta });
             }
             writer.flushAll();
         } finally {
