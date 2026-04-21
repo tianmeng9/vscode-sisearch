@@ -100,13 +100,14 @@
 
 **删除:**
 - `src/index/symbolIndex.ts`(InMemorySymbolIndex)
-- `src/storage/storageManager.ts` 的 saveFull/saveDirty 路径
+- `src/storage/storageManager.ts`(整个文件,legacy shards 不读取直接删除)
 - `src/storage/shardStreamWriter.ts`
+- `src/storage/codec.ts`(msgpack encode/decode 不再使用)
 - `.sisearch/shards/` 目录(用户首次运行新版时静默清)
 
 **新增:**
 - `src/index/dbBackend.ts`(唯一 DB 入口)
-- 依赖 `better-sqlite3` + `@types/better-sqlite3`
+- 依赖 **新增** `better-sqlite3` + `@types/better-sqlite3`;**删除** `@msgpack/msgpack`(随 codec.ts 一起退役)
 - 配置 `siSearch.search.duringSyncBehavior`、`siSearch.search.maxResults`
 - `.github/workflows/prebuild.yml`(M8)
 - 测试:`dbBackend.test.ts`、`dbBackend.integrity.test.ts`、`dbBackend.integration.test.ts`、`composition.fallback.test.ts`
@@ -463,7 +464,7 @@ async function executeSearchWithIndex(
 | # | 标准 |
 |---|------|
 | Q1 | 单元测试通过;`dbBackend.ts` 覆盖 ≥ 85%,`syncOrchestrator.ts` ≥ 80% |
-| Q2 | `@vscode/test-electron` host-only 测试通过(待补 test harness) |
+| Q2 | `@vscode/test-electron` host-only 测试通过;当前 `test/runTest.ts` 只支持 node-runnable,M7 前需要先接通 electron test 驱动 |
 | Q3 | `npm run compile` 零 TS error/warning |
 | Q4 | 跳过(暂无 lint 配置) |
 | Q5 | `npm install && npm rebuild` 本地能通 |
@@ -483,6 +484,7 @@ async function executeSearchWithIndex(
 | `symbolIndexFacade.test.ts` | 改 mock |
 | `storageManager.test.ts` | **删除** |
 | `shardStreamWriter.test.ts` | **删除** |
+| `codec.test.ts` | **删除**(msgpack codec 随 StorageManager 一起移除) |
 | `searchEngine.test.ts` | 加 Sync-during-search 测 |
 | `composition.fallback.test.ts`(host-only) | **新建** |
 | `searchBench.ts` | 扩(P5/P6/P7) |
@@ -571,3 +573,11 @@ M9 Marketplace 试打包
 - Source Insight 架构分析:本 spec 的"B+ tree on disk + LRU cache"思路参考
 - better-sqlite3:<https://github.com/WiseLibs/better-sqlite3>
 - SQLite FTS5 文档:<https://sqlite.org/fts5.html>
+
+## Review 记录
+
+- **2026-04-21 self-review**:
+  - Placeholder scan:1 处 "待补" 已改为明确的前置条件描述
+  - Consistency:StorageManager / codec.ts / msgpack 删除范围统一,测试矩阵同步
+  - Scope:9 个 milestone + 数据模型 + 接口契约共享,**不拆分** spec
+  - Ambiguity:无
