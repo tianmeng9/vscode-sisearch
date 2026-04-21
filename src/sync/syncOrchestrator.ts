@@ -18,6 +18,7 @@ export interface SyncDeps {
             files: Array<{ absPath: string; relativePath: string }>,
             onBatchResult: (result: ParseBatchResult) => Promise<void>,
             onBatchComplete?: (done: number, total: number, lastFile?: string) => void,
+            cancelSignal?: { readonly isCancellationRequested: boolean },
         ): Promise<void>;
     };
     index: {
@@ -95,6 +96,9 @@ export class SyncOrchestrator {
                 (done, total, lastFile) => {
                     this.deps.onProgress?.('parsing', done, total, lastFile);
                 },
+                // Forward cancellation so the pool can exit workerLoops promptly
+                // instead of draining every file after the user hit cancel.
+                cancellationToken,
             );
         }
 

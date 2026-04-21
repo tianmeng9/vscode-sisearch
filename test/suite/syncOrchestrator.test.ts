@@ -281,6 +281,37 @@ suite('SyncOrchestrator streaming', () => {
         assert.strictEqual(deps._spy.metaApplied.length, 2);
     });
 
+    test('passes cancellationToken through to workerPool.parse', async () => {
+        // Regression: orchestrator used to await parse() with no way for the
+        // underlying pool to know about cancellation, so cancel couldn't stop
+        // parsing mid-stream. Now orchestrator must forward its cancelToken.
+        let seenSignal: { isCancellationRequested: boolean } | undefined;
+        const deps = makeDeps({
+            workerPool: {
+                parse: async (
+                    _files: any,
+                    _onBatch: any,
+                    _onComplete: any,
+                    signal?: { isCancellationRequested: boolean },
+                ) => {
+                    seenSignal = signal;
+                },
+            },
+        });
+        const orch = new SyncOrchestrator(deps);
+        const token = { isCancellationRequested: false };
+        await orch.synchronize({ workspaceRoot: '/w', cancellationToken: token });
+        assert.ok(seenSignal, 'workerPool.parse must receive a cancel signal');
+        // Mutating the orchestrator's token must propagate to the signal object
+        // the pool saw — same reference or live-read proxy.
+        token.isCancellationRequested = true;
+        assert.strictEqual(
+            seenSignal!.isCancellationRequested,
+            true,
+            'signal must observe live token state, not a stale snapshot',
+        );
+    });
+
     test('saveDirty called at end with collected dirty paths', async () => {
         let saveDirtyArgs: any;
         const deps = makeDeps({
