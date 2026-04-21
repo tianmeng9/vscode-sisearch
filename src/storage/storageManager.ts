@@ -28,11 +28,11 @@ interface LegacyIndex {
 export class StorageManager {
     private readonly chunkThreshold: number;
     constructor(private options: { workspaceRoot: string; shardCount: number; chunkThreshold?: number }) {
-        // Phase 5F:512 对 AMD GPU 驱动这种含 10+ MB 寄存器头、单文件 15 万符号的
-        // 仓库太大 —— bucket flush 时一次 encodeMessagePack 要序列化 100 万级符号,
-        // 峰值 Buffer 几百 MB。降到 128 让 bucket 更频繁 flush,单次 encode 规模 ÷ 4。
-        // 对普通仓库影响几乎没有(小文件几乎立即填不满 bucket,flushAll 会兜底)。
-        this.chunkThreshold = options.chunkThreshold ?? 128;
+        // Phase 5G:撤回 Phase 5F 的 128 降级。2026-04-21 15:07 崩证据表明真正
+        // 根因是 tree-sitter 爆堆(1.5 MB offset.h × 8 worker 并发),不是 save
+        // 阶段 —— save 根本没走到。128 反而拖慢小仓库存盘(过度 flush)。
+        // 真正的 save-path 保护靠 saveDirty 流式化(Phase 5F 剩下的那部分)。
+        this.chunkThreshold = options.chunkThreshold ?? 512;
     }
 
     private get indexDir(): string {

@@ -1,6 +1,6 @@
 // test/suite/parserConfig.test.ts
 // 契约:resolveMaxFileSizeBytes 把 VS Code 配置归一成一个非负整数 maxBytes。
-//   - 未配置 / undefined → DEFAULT_MAX_FILE_SIZE_BYTES (2 MB)
+//   - 未配置 / undefined → DEFAULT_MAX_FILE_SIZE_BYTES (1 MB, Phase 5G)
 //   - 0 → 0 (用户明示禁用阈值,承担 WASM 爆堆风险)
 //   - 正整数 → 原值
 //   - 负数 / NaN / 非数字 → DEFAULT(防御性回退)
@@ -12,9 +12,9 @@ import {
 } from '../../src/parserConfig';
 
 suite('resolveMaxFileSizeBytes', () => {
-    test('undefined → default 2 MB', () => {
+    test('undefined → default 1 MB', () => {
         assert.strictEqual(resolveMaxFileSizeBytes(undefined), DEFAULT_MAX_FILE_SIZE_BYTES);
-        assert.strictEqual(DEFAULT_MAX_FILE_SIZE_BYTES, 2 * 1024 * 1024);
+        assert.strictEqual(DEFAULT_MAX_FILE_SIZE_BYTES, 1 * 1024 * 1024);
     });
 
     test('0 → 0 (user-disabled)', () => {
