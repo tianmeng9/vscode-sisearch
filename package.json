@@ -223,6 +223,12 @@
           "type": "number",
           "default": 5000,
           "description": "Debounce delay in milliseconds before auto sync triggers"
+        },
+        "siSearch.parser.maxFileSizeBytes": {
+          "type": "number",
+          "default": 2097152,
+          "minimum": 0,
+          "description": "Files larger than this byte count fall back to a fast regex-based symbol extractor instead of the full tree-sitter parser. Default is 2 MB (2097152). Set to 0 to disable the fallback and always use tree-sitter. WARNING: tree-sitter is compiled to WebAssembly and its linear memory is hard-capped at 2 GB by web-tree-sitter; parsing a single huge auto-generated file (for example Linux kernel driver headers like dcn_3_2_0_sh_mask.h at ~24 MB) can exhaust this ceiling and crash the VS Code extension host (exit 134 / SIGABRT). Disabling the fallback (0) or setting this value very high (tens of MB) re-exposes you to that crash; only do so if you know your workspace has no such files."
         }
       }
     }
