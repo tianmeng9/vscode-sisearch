@@ -147,6 +147,12 @@ export class SymbolIndex {
                         await onBatchResult(result);
                     }
                 },
+                // 透传 recycle 到真实 WorkerPool。orchestrator 在 cancel 后会调用,
+                // 让老 worker 连同 WASM 堆一起被 OS 回收,下一轮 sync 从干净状态开始。
+                // In-process fallback 没有 worker 概念,所以没 recycle 就跳过。
+                recycle: this.workerPool
+                    ? async () => { await this.workerPool!.recycle(); }
+                    : undefined,
             },
             index: {
                 update: (file, symbols) => this.inner.update(file, symbols),

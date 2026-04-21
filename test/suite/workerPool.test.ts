@@ -146,6 +146,60 @@ suite('workerPool', () => {
         await pool.dispose();
     });
 
+    // --- recycle: cancel 后重建 workers,避免 WASM 堆脏状态跨 sync 累积 ---
+    //
+    // 背景:Phase 1 已经把 symbolParser 改成 per-language 持久 Parser,
+    // 正常 Sync 的 WASM 堆几乎不增长。但 Cancel 是边界场景 —— worker.parseBatch()
+    // 可能已把批次发给 worker、但还没收到响应就被丢弃,worker 里的 parse() 仍在跑,
+    // tree alloc 已发生却没 matched delete(因为主线程的 pending Map 被清掉了)。
+    // 跨一次 cancel 留下的"僵尸分配",累积若干次后仍可能复现 exit 134。
+    // recycle() 通过 terminate+重建,让 OS 回收整个 worker 线程和 WASM 堆,从零开始。
+    test('recycle() replaces all workers with fresh ones from factory', async () => {
+        let constructed = 0;
+        const pool = new WorkerPool({
+            size: 2,
+            workerFactory: async () => { constructed++; return makeStubWorker(); },
+        });
+        // 构造立即触发 2 次 factory 调用。等工厂完成。
+        await pool.parse([], async () => {});
+        assert.strictEqual(constructed, 2, 'initial pool should have created 2 workers');
+
+        await pool.recycle();
+
+        assert.strictEqual(constructed, 4, 'recycle must construct 2 new workers (total 4)');
+
+        // recycled pool 仍可用。
+        const files = [{ absPath: '/w/a.c', relativePath: 'a.c' }];
+        const batches: ParseBatchResult[] = [];
+        await pool.parse(files, async (r) => { batches.push(r); });
+        assert.strictEqual(batches.length, 1, 'recycled pool must be parseable');
+        await pool.dispose();
+    });
+
+    test('recycle() disposes old workers before replacing', async () => {
+        const disposed: number[] = [];
+        let id = 0;
+        const pool = new WorkerPool({
+            size: 2,
+            workerFactory: async () => {
+                const myId = ++id;
+                return {
+                    parseBatch: makeStubWorker().parseBatch,
+                    dispose: async () => { disposed.push(myId); },
+                };
+            },
+        });
+        // Ensure initial factory calls complete.
+        await pool.parse([], async () => {});
+
+        await pool.recycle();
+
+        // 原 workers (id 1,2) 必须被 dispose。disposed.sort 避免顺序断言脆弱。
+        assert.deepStrictEqual(disposed.slice().sort((a, b) => a - b), [1, 2],
+            `expected both original workers disposed; got ${JSON.stringify(disposed)}`);
+        await pool.dispose();
+    });
+
     test('pre-cancelled token skips parse entirely', async () => {
         const pool = new WorkerPool({
             size: 2,

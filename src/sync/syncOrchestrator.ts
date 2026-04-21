@@ -20,6 +20,9 @@ export interface SyncDeps {
             onBatchComplete?: (done: number, total: number, lastFile?: string) => void,
             cancelSignal?: { readonly isCancellationRequested: boolean },
         ): Promise<void>;
+        /** 可选:在 cancel 后由 orchestrator 调用,丢弃被中断的 worker 以防 WASM
+         *  堆脏状态累积。老 adapter 可能没实现,因此可选。 */
+        recycle?(): Promise<void>;
     };
     index: {
         update(file: string, symbols: SymbolEntry[]): void;
@@ -102,7 +105,17 @@ export class SyncOrchestrator {
             );
         }
 
-        if (cancellationToken?.isCancellationRequested) { return; }
+        if (cancellationToken?.isCancellationRequested) {
+            // parse 被中断:丢弃的 parseBatch 可能已让 worker 的 WASM 堆留下僵尸 alloc
+            // (主线程 pending Map 已清,但 worker 里的 tree.alloc 已发生)。
+            // 跨多次 cancel 累积后仍可能触发 exit 134。recycle 让 OS 回收整条 worker
+            // 线程 + WASM linear memory,下一轮 sync 从干净状态开始。
+            // 只在 parse 真正跑过(toProcess > 0)时才需要 —— 之前阶段 cancel 无脏堆。
+            if (classified.toProcess.length > 0) {
+                await this.deps.workerPool.recycle?.();
+            }
+            return;
+        }
 
         // Persist to storage — incremental if possible
         if (dirtyPaths.size > 0) {

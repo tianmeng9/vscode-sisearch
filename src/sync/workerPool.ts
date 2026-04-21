@@ -101,4 +101,30 @@ export class WorkerPool {
         const workers = await this.workersPromise;
         await Promise.all(workers.map(w => w.dispose()));
     }
+
+    /**
+     * 销毁所有 worker 并用 factory 重建同等数量的新 worker。
+     *
+     * 为什么需要:Phase 1 已修掉 per-file `new Parser()` 的 WASM 碎片主源,正常
+     * Sync 堆增长已经极小。但 Cancel 是边界场景 —— parseBatch 可能已发送到 worker、
+     * 主线程却丢弃了 pending entry,worker 里的 parse() 仍在跑,最终 tree alloc
+     * 发生了但 delete 对应的 Promise 已不存在。跨多次 cancel 累积,仍有复现 exit 134
+     * 的风险。recycle 通过 terminate+重建,让 OS 整块回收 worker 线程栈和 WASM
+     * linear memory,从零开始。
+     *
+     * 不在此处实现 quiesce —— dispose() 已经 reject 所有 pending、terminate 线程,
+     * 主线程的 `await this.workerPool.parse(...)` 要么已返回(正常完成或 cancel 后
+     * workerLoop 退出)、要么还在等 parseBatch 响应(被 reject)。调用方只需保证
+     * 没有并发 parse 在跑(由 reentrancyGuard 保证)。
+     */
+    async recycle(): Promise<void> {
+        const oldWorkers = await this.workersPromise;
+        // 先原地替换 promise,避免并发 parse 看到半个旧 pool。
+        this.workersPromise = Promise.all(
+            Array.from({ length: this.options.size }, () => this.options.workerFactory()),
+        );
+        await Promise.all(oldWorkers.map(w => w.dispose()));
+        // 等新 workers 真正构造完成,这样 recycle() 返回即可直接 parse。
+        await this.workersPromise;
+    }
 }
