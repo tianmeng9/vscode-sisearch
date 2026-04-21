@@ -26,11 +26,16 @@ async function main(): Promise<void> {
             toDelete: [],
         }),
         workerPool: {
-            parse: async (files) => ({
-                symbols: files.flatMap(f => symbols.map(s => ({ ...s, filePath: f.absPath, relativePath: f.relativePath }))),
-                metadata: files.map(f => ({ relativePath: f.relativePath, mtime: 1, size: 100, symbolCount: 1 })),
-                errors: [],
-            }),
+            // Task 8 changed parse() from returning ParseBatchResult to a callback-driven void.
+            // Emit one batch carrying all fixture files — matches the pre-refactor semantics for
+            // benchmarking purposes (single synchronous delivery, no back-pressure delay).
+            parse: async (files, onBatchResult) => {
+                await onBatchResult({
+                    symbols: files.flatMap(f => symbols.map(s => ({ ...s, filePath: f.absPath, relativePath: f.relativePath }))),
+                    metadata: files.map(f => ({ relativePath: f.relativePath, mtime: 1, size: 100, symbolCount: 1 })),
+                    errors: [],
+                });
+            },
         },
         index: {
             update: () => {},
