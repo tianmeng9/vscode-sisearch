@@ -72,20 +72,25 @@ async function main(): Promise<void> {
                         stream: true,
                         macrosOnly,
                     });
-                    // Phase 5H:stream 路径的符号 *不入索引* —— 主线程堆是根瓶颈。
-                    // 2026-04-21 实证:700 万符号 SymbolEntry 装进 InMemorySymbolIndex
-                    // 就是 1.7 GB,加上 name index + postMessage 克隆 → 2.5 GB 主线程 OOM。
-                    // 这些 1+ MB 文件全是机器生成的 AMD GPU 寄存器宏,用户实际搜它们的
-                    // 频率极低(grep 原文更合适);索引里保留 metadata 保证 sync 完整性
-                    // (知道文件在,不会重复 parse),symbols 直接丢弃不传回主线程。
+                    // Phase 5D + SQLite 后端(M3 Task 3.1,回滚 Phase 5H):stream 路径的符号
+                    // 通过 onSymbol 流式推入 batch 级 symbols 数组,随 batchResult 回到主线程,
+                    // 最终由 DbBackend.writeBatch 落盘到 SQLite(FTS5 索引)。
+                    // 主线程不再累积 InMemorySymbolIndex,瓶颈已从 JS 堆移到 SQLite 写事务;
+                    // 内存安全由 workerLoop 背压 + WAL 事务保证,不再需要"只计数不入库"保护。
+                    // AMD GPU 寄存器宏等 1+ MB 机器生成文件的 stream 产物现在进入 FTS5 索引,
+                    // 搜索可命中。
                     //
-                    // stream 函数仍然消费文件(用于统计 symbolCount 给 metadata),
-                    // 但 onSymbol 什么都不做 —— 避免 worker 内 symbols 数组增长。
+                    // 保留的 Phase 5C/5D/5G 优化:lineContentMode='empty'(不持有原行文本)、
+                    // macrosOnly(超大文件仅抽宏定义)、stream 内部不保留 seen Set、
+                    // 1 MB 阈值(maxBytes)之上才走 stream 路径。
                     let streamedCount = 0;
                     await extractSymbolsByRegexStream(file.absPath, file.relativePath, {
                         lineContentMode: 'empty',
                         macrosOnly,
-                        onSymbol: () => { streamedCount++; },
+                        onSymbol: (entry) => {
+                            symbols.push(entry);
+                            streamedCount++;
+                        },
                     });
                     symbolCount = streamedCount;
                 } else {
