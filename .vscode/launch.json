@@ -30,6 +30,20 @@
       ],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "preLaunchTask": "${defaultBuildTask}"
+    },
+    {
+      "name": "Run Extension (Linux drivers + DIAG)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "/home/mi/Disk/Git/linux/drivers"
+      ],
+      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "preLaunchTask": "${defaultBuildTask}",
+      "env": {
+        "SISEARCH_WORKER_DIAG": "1"
+      }
     }
   ]
 }
