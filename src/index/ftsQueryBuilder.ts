@@ -16,3 +16,12 @@ export function extractLiteralTokens(pattern: string): string[] {
     const tokens = pattern.match(/[A-Za-z0-9_\u4e00-\u9fff]{2,}/g);
     return tokens ?? [];
 }
+
+/**
+ * 转义 SQLite GLOB 模式里的元字符,让用户输入当字面量匹配。
+ * GLOB 不支持 ESCAPE 子句,规避方式是把 * ? [ ] 用字符类 [x] 包起来。
+ * 反斜杠在 GLOB 里没有特殊含义,无需处理。
+ */
+export function escapeGlobLiteral(s: string): string {
+    return s.replace(/[*?[\]]/g, (c) => '[' + c + ']');
+}

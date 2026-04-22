@@ -247,8 +247,16 @@ export async function executeSearchWithIndex(
             const totalCount = index.countMatches(query, workspaceRoot, options);
             return { results, totalCount };
         }
+        // loadMore 翻到索引边界时(offset>0 且 index 返回 0 条),绝不 fallback 到 ripgrep。
+        // Index 和 ripgrep 语义不同:index 搜符号名,ripgrep 搜全文行,
+        // 如果 fallback 会把 ripgrep 的行数(比如 10829)当 totalCount 覆盖回 webview,
+        // 造成右下角 pagination label 与 sidebar count 不一致。
+        if (offset > 0) {
+            const totalCount = index.countMatches(query, workspaceRoot, options);
+            return { results: [], totalCount };
+        }
     }
-    // Fallback to ripgrep
+    // Fallback to ripgrep — 仅首次搜索(offset=0)且 index 查不到时才走
     const fallback = await executeSearch(query, workspaceRoot, options, includeExtensions, excludePatterns, signal);
     return { results: fallback, totalCount: fallback.length };
 }
