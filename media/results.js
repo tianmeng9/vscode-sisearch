@@ -12,6 +12,34 @@
     let highlightBoxMode = true;
     let contextMenu = null;
 
+    // Pagination state (M4.4): webview consumes totalCount/loadedCount from the
+    // extension so the "scroll to bottom -> loadMore" loop knows when to stop.
+    let loadingMore = false;
+    let loadedCount = 0;
+    let totalCount = 0;
+    const paginationLabel = document.getElementById('pagination-label');
+
+    function updatePaginationLabel() {
+        if (!paginationLabel) { return; }
+        if (totalCount <= 0) {
+            paginationLabel.textContent = '';
+        } else if (totalCount <= loadedCount) {
+            paginationLabel.textContent = loadedCount + ' results';
+        } else {
+            paginationLabel.textContent = loadedCount + ' / ' + totalCount;
+        }
+    }
+
+    function maybeLoadMore() {
+        if (loadingMore) { return; }
+        if (totalCount <= 0 || loadedCount >= totalCount) { return; }
+        const el = resultsList;
+        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
+            loadingMore = true;
+            vscode.postMessage({ command: 'loadMore' });
+        }
+    }
+
     function hidePreview() {
         anchorRow = null;
         hoverPreview.style.display = 'none';
@@ -25,6 +53,10 @@
 
     resultsList.addEventListener('scroll', () => {
         requestAnimationFrame(rerenderContent);
+        // M4.4: piggyback on the same rAF-driven scroll handler so we don't
+        // add a third listener (there's already a second one below for hiding
+        // the preview). Keep both rAFs separate so cancellation is independent.
+        requestAnimationFrame(maybeLoadMore);
     });
 
     window.addEventListener('message', (event) => {
@@ -36,10 +68,32 @@
                 if (msg.highlightColors) { HIGHLIGHT_COLORS.push(...msg.highlightColors); }
                 if (msg.highlightBox !== undefined) { highlightBoxMode = msg.highlightBox; }
                 manualHighlights = [];
+                // M4.4: reset pagination. totalCount/loadedCount are optional on
+                // the wire — fall back to results.length so older/non-paginated
+                // senders keep working.
+                loadedCount = (msg.loadedCount !== undefined && msg.loadedCount !== null)
+                    ? msg.loadedCount : msg.results.length;
+                totalCount = (msg.totalCount !== undefined && msg.totalCount !== null)
+                    ? msg.totalCount : msg.results.length;
+                loadingMore = false;
+                // Reset scroll to top so maybeLoadMore doesn't fire immediately
+                // on a fresh small result set that happens to fit the viewport.
+                resultsList.scrollTop = 0;
+                updatePaginationLabel();
                 rerenderContent();
                 break;
             case 'appendResults':
                 allEntries = allEntries.concat(msg.results);
+                if (msg.loadedCount !== undefined && msg.loadedCount !== null) {
+                    loadedCount = msg.loadedCount;
+                } else {
+                    loadedCount = allEntries.length;
+                }
+                if (msg.totalCount !== undefined && msg.totalCount !== null) {
+                    totalCount = msg.totalCount;
+                }
+                loadingMore = false;
+                updatePaginationLabel();
                 rerenderContent();
                 break;
             case 'highlightEntry':

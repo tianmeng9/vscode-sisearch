@@ -133,6 +133,27 @@ body {
     user-select: none;
 }
 
+.pagination-label {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    padding: 2px 8px;
+    background: var(--vscode-editor-background);
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-font-family);
+    font-size: 11px;
+    text-align: right;
+    border-top: 1px solid var(--vscode-widget-border, #454545);
+    border-left: 1px solid var(--vscode-widget-border, #454545);
+    border-top-left-radius: 3px;
+    pointer-events: none;
+    z-index: 50;
+}
+
+.pagination-label:empty {
+    display: none;
+}
+
 .context-menu {
     position: fixed;
     background: var(--vscode-menu-background);
