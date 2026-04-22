@@ -346,27 +346,32 @@ export class DbBackend {
             return filtered.slice(p.offset, p.offset + p.limit);
         }
         // substring
+        // SQL LIKE 在 SQLite 默认 case-insensitive(仅 ASCII);case-sensitive 路径
+        // 必须 GLOB 或 LIKE + 自定义 collate。GLOB 不支持 ESCAPE 子句(会报
+        // "wrong number of arguments to function GLOB()"),所以 case-sensitive
+        // 用 LIKE + 走 COLLATE BINARY + ESCAPE,case-insensitive 用 LIKE + NOCASE。
         const tokens = extractLiteralTokens(query);
-        const like = '%' + query.replace(/[%_]/g, '\\$&') + '%';
+        const likePattern = '%' + query.replace(/[%_\\]/g, '\\$&') + '%';
+        const collate = options.caseSensitive ? 'BINARY' : 'NOCASE';
         if (tokens.length === 0) {
             // 无可用 token,直接 LIKE 扫全表(上限 10k)
             return this.db!.prepare(
                 `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
                  FROM symbols s JOIN files f ON f.id = s.file_id
-                 WHERE s.name ${options.caseSensitive ? 'GLOB' : 'LIKE'} ? ESCAPE '\\'
+                 WHERE s.name LIKE ? ESCAPE '\\' COLLATE ${collate}
                  ORDER BY f.relative_path, s.line_number
                  LIMIT ? OFFSET ?`
-            ).all(options.caseSensitive ? `*${query}*` : like, p.limit, p.offset) as any;
+            ).all(likePattern, p.limit, p.offset) as any;
         }
         const fts = tokens.map(escapeFtsLiteral).join(' OR ');
         return this.db!.prepare(
             `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
              FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
                               JOIN files f ON f.id = s.file_id
-             WHERE symbols_fts MATCH ? AND s.name ${options.caseSensitive ? 'GLOB' : 'LIKE'} ? ESCAPE '\\'
+             WHERE symbols_fts MATCH ? AND s.name LIKE ? ESCAPE '\\' COLLATE ${collate}
              ORDER BY f.relative_path, s.line_number
              LIMIT ? OFFSET ?`
-        ).all(fts, options.caseSensitive ? `*${query}*` : like, p.limit, p.offset) as any;
+        ).all(fts, likePattern, p.limit, p.offset) as any;
     }
 
     private selectCountForQuery(query: string, options: SearchOptions): number {
@@ -396,18 +401,19 @@ export class DbBackend {
             return rows.filter((r: any) => re.test(r.name)).length;
         }
         const tokens = extractLiteralTokens(query);
-        const like = '%' + query.replace(/[%_]/g, '\\$&') + '%';
+        const likePattern = '%' + query.replace(/[%_\\]/g, '\\$&') + '%';
+        const collate = options.caseSensitive ? 'BINARY' : 'NOCASE';
         if (tokens.length === 0) {
             const r = this.db!.prepare(
-                `SELECT COUNT(*) AS c FROM symbols WHERE name ${options.caseSensitive ? 'GLOB' : 'LIKE'} ? ESCAPE '\\'`
-            ).get(options.caseSensitive ? `*${query}*` : like) as { c: number };
+                `SELECT COUNT(*) AS c FROM symbols WHERE name LIKE ? ESCAPE '\\' COLLATE ${collate}`
+            ).get(likePattern) as { c: number };
             return r.c;
         }
         const fts = tokens.map(escapeFtsLiteral).join(' OR ');
         const r = this.db!.prepare(
             `SELECT COUNT(*) AS c FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
-             WHERE symbols_fts MATCH ? AND s.name ${options.caseSensitive ? 'GLOB' : 'LIKE'} ? ESCAPE '\\'`
-        ).get(fts, options.caseSensitive ? `*${query}*` : like) as { c: number };
+             WHERE symbols_fts MATCH ? AND s.name LIKE ? ESCAPE '\\' COLLATE ${collate}`
+        ).get(fts, likePattern) as { c: number };
         return r.c;
     }
 

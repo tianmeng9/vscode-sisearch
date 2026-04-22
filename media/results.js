@@ -34,7 +34,11 @@
         if (loadingMore) { return; }
         if (totalCount <= 0 || loadedCount >= totalCount) { return; }
         const el = resultsList;
-        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
+        // 视野底部对应的总行索引。如果它超过已加载数 - overscan,就该 load more。
+        // 这样做比"scrollTop 到底"更积极 —— 滚到未加载占位区之前就预取。
+        const viewportBottomRow = Math.ceil((el.scrollTop + el.clientHeight) / VS.rowHeight);
+        const prefetchMargin = VS.overscan * 2;  // 提前 ~16 行预取
+        if (viewportBottomRow + prefetchMargin >= loadedCount) {
             loadingMore = true;
             vscode.postMessage({ command: 'loadMore' });
         }
@@ -218,16 +222,23 @@
     }
 
     function rerenderContent() {
-        const total = allEntries.length;
+        const loaded = allEntries.length;
+        // 滚动条总高度按 totalCount 算,未加载段保留为占位空白,避免
+        // 用户看到"滚条到底但只有 200 条"的假象。loadedCount < totalCount
+        // 时未加载段是 (totalCount - loadedCount) × rowHeight 的占位空白;
+        // 滚动进该区间会触发 loadMore 追加真实行。
+        const total = Math.max(totalCount, loaded);
         const scrollTop = resultsList.scrollTop;
         const viewportHeight = resultsList.clientHeight || 600;
         const visibleCount = Math.ceil(viewportHeight / VS.rowHeight);
 
         const start = Math.max(0, Math.floor(scrollTop / VS.rowHeight) - VS.overscan);
-        const end = Math.min(total, start + visibleCount + VS.overscan * 2);
+        // 只渲染已加载区间;start 之后超过 loadedCount 的部分不渲染实行。
+        const renderEnd = Math.min(loaded, start + visibleCount + VS.overscan * 2);
 
         const spacerTopPx = start * VS.rowHeight;
-        const spacerBottomPx = Math.max(0, (total - end) * VS.rowHeight);
+        // 底部 spacer 要覆盖"已渲染之后到全量底"的所有空间(占位 + 未加载)。
+        const spacerBottomPx = Math.max(0, (total - renderEnd) * VS.rowHeight);
 
         const fragment = document.createDocumentFragment();
 
@@ -235,7 +246,7 @@
         topSpacer.style.height = spacerTopPx + 'px';
         fragment.appendChild(topSpacer);
 
-        for (let i = start; i < end; i++) {
+        for (let i = start; i < renderEnd; i++) {
             fragment.appendChild(createRow(allEntries[i]));
         }
 

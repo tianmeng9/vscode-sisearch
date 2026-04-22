@@ -27,7 +27,10 @@ export function updateSidebarHistory(store: SearchStore, sidebar: SidebarProvide
         entries: history.map(e => ({
             id: e.id,
             query: e.query,
-            count: e.results.length,
+            // M4 pagination: totalCount 是后端的真实匹配总数;results.length 只是
+            // 当前已加载的(默认 200)。sidebar UI 显示 totalCount 给用户"匹配了多少"
+            // 的准确感知。老历史条目没 totalCount 时回退 results.length。
+            count: e.totalCount ?? e.results.length,
             active: e.id === activeId,
         })),
     });

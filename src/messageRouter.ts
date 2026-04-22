@@ -64,9 +64,15 @@ export function wireMessageRouter(
 
                     editorDecorations.updateResults(store.getActiveResults());
                 } catch (err: unknown) {
+                    // 搜索失败不骚扰用户 —— 侧栏 count=0 + 空结果面板已经足够传达
+                    // "没结果"。用户看到 error toast 会以为扩展坏了,实际可能只是
+                    // 一个 regex 无效 / FTS 语法特殊字符 / 临时 DB 忙。详细错误写
+                    // 进 console,开发者需要 debug 时打开 Output 面板能看到。
                     sidebarProvider.postMessage({ command: 'searchComplete', count: 0 });
-                    const msg = err instanceof Error ? err.message : String(err);
-                    vscode.window.showErrorMessage(`SI Search error: ${msg}`);
+                    const em = err instanceof Error ? err.message : String(err);
+                    console.error('[SI Search] search failed:', em);
+                    const emptyEntries = store.getActiveResultsPanelEntries();
+                    resultsPanel.showResults(emptyEntries, msg.query, { totalCount: 0, loadedCount: 0 });
                 }
                 break;
             }
@@ -122,8 +128,9 @@ export function wireMessageRouter(
                     resultsPanel.appendResults(newEntries, totalCount, newLoadedCount);
                     editorDecorations.updateResults(store.getActiveResults());
                 } catch (err: unknown) {
+                    // loadMore 失败:用户看来就是"滚到底没新数据",静默比 toast 好。
                     const em = err instanceof Error ? err.message : String(err);
-                    vscode.window.showErrorMessage(`SI Search loadMore error: ${em}`);
+                    console.error('[SI Search] loadMore failed:', em);
                 }
                 break;
             }
