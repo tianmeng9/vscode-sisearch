@@ -99,6 +99,10 @@
         "command": "siSearch.rebuildNative",
         "title": "SI Search: Rebuild Native (SQLite)",
         "category": "SI Search"
+      },
+      {
+        "command": "siSearch.findInResults",
+        "title": "SI Search: Find in Results"
       }
     ],
     "menus": {
@@ -152,6 +156,12 @@
         "command": "siSearch.highlightSelection",
         "key": "ctrl+shift+f8",
         "mac": "cmd+shift+f8"
+      },
+      {
+        "command": "siSearch.findInResults",
+        "key": "ctrl+f",
+        "mac": "cmd+f",
+        "when": "activeWebviewPanelId == 'siSearch.resultsPanel'"
       },
       {
         "command": "siSearch.jumpToResult",

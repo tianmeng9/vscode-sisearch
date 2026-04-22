@@ -58,7 +58,8 @@ export type ResultsPanelUpdate =
     | { command: 'showResults'; results: ResultsPanelEntry[]; query: string; totalCount?: number; loadedCount?: number }
     | { command: 'appendResults'; results: ResultsPanelEntry[]; query: string; totalCount?: number; loadedCount?: number }
     | { command: 'highlightEntry'; index: number }
-    | { command: 'clearHighlights' };
+    | { command: 'clearHighlights' }
+    | { command: 'openFind' };
 
 /** Message types from results panel webview to extension */
 export type ResultsPanelMessage =

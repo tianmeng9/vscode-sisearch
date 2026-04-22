@@ -10,6 +10,14 @@
     <div id="resultsList"></div>
     <div id="hoverPreview" class="hover-preview"></div>
     <div id="pagination-label" class="pagination-label"></div>
+    <div id="find-widget" class="find-widget" hidden>
+        <input id="find-input" type="text" placeholder="Find in results" spellcheck="false" />
+        <span id="find-count" class="find-count">0/0</span>
+        <button id="find-prev" class="find-btn" title="Previous match (Shift+Enter)" type="button">&#x2191;</button>
+        <button id="find-next" class="find-btn" title="Next match (Enter)" type="button">&#x2193;</button>
+        <button id="find-case" class="find-btn find-toggle" title="Match case" type="button">Aa</button>
+        <button id="find-close" class="find-btn" title="Close (Esc)" type="button">&times;</button>
+    </div>
     <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
 </body>
 </html>

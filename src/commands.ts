@@ -132,6 +132,13 @@ export function registerCommands(
             resultsPanel.postMessage({ command: 'toggleHighlightText', text });
         }),
 
+        // Ctrl+F while the results webview is focused → open in-panel find widget.
+        // VS Code 主窗口会先接到 Ctrl+F;keybinding 的 when 子句把它 route 到这个
+        // 命令,命令再把消息发给 webview 让它自己打开 find widget。
+        vscode.commands.registerCommand('siSearch.findInResults', () => {
+            resultsPanel.postMessage({ command: 'openFind' });
+        }),
+
         vscode.commands.registerCommand('siSearch.syncIndex', async () => {
             const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             if (!wsRoot) {

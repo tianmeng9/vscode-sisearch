@@ -36,6 +36,135 @@
     // not through #resultsList.
     const scrollRoot = document.scrollingElement || document.documentElement;
 
+    // ── In-panel find (Ctrl+F) ────────────────────────────────────────
+    // 查找作用于 allEntries(当前已加载的结果),不回后端、不跨页重算。
+    // 命中记录为 entry 在 allEntries 里的下标数组 find.hits;find.active 指向
+    // 当前聚焦的那个下标。navigation 把 scrollRoot 滚动到 hitIndex*rowHeight,
+    // 虚拟滚动会把该行渲染出来,createRow 里按 dataset.index 决定加 find-hit /
+    // find-active 样式。
+    const find = {
+        visible: false,
+        query: '',
+        caseSensitive: false,
+        hits: [],        // indices into allEntries
+        activeHit: -1,   // index into find.hits
+    };
+    const findWidget = document.getElementById('find-widget');
+    const findInput = document.getElementById('find-input');
+    const findCount = document.getElementById('find-count');
+    const findPrevBtn = document.getElementById('find-prev');
+    const findNextBtn = document.getElementById('find-next');
+    const findCaseBtn = document.getElementById('find-case');
+    const findCloseBtn = document.getElementById('find-close');
+
+    function matchEntry(entry, q, caseSensitive) {
+        if (!q) { return false; }
+        // 只在 lineContent + relativePath 上找(用户看得到的两列文本)。
+        const hay = (entry.lineContent || '') + '\n' + (entry.relativePath || '');
+        return caseSensitive ? hay.indexOf(q) >= 0 : hay.toLowerCase().indexOf(q.toLowerCase()) >= 0;
+    }
+
+    function recomputeFindHits() {
+        find.hits = [];
+        find.hitSet = new Set();
+        if (!find.query) {
+            find.activeHit = -1;
+            updateFindCount();
+            return;
+        }
+        for (let i = 0; i < allEntries.length; i++) {
+            if (matchEntry(allEntries[i], find.query, find.caseSensitive)) {
+                find.hits.push(i);
+                find.hitSet.add(i);
+            }
+        }
+        find.activeHit = find.hits.length > 0 ? 0 : -1;
+        updateFindCount();
+    }
+
+    function updateFindCount() {
+        if (!findCount) { return; }
+        if (!find.query) {
+            findCount.textContent = '';
+        } else if (find.hits.length === 0) {
+            findCount.textContent = 'No results';
+        } else {
+            findCount.textContent = (find.activeHit + 1) + ' / ' + find.hits.length;
+        }
+    }
+
+    function scrollToActiveHit() {
+        if (find.activeHit < 0 || find.activeHit >= find.hits.length) { return; }
+        const entryIdx = find.hits[find.activeHit];
+        const rowTop = entryIdx * VS.rowHeight;
+        const viewportH = window.innerHeight || 600;
+        // Keep the hit near the middle so surrounding context is visible.
+        const target = Math.max(0, rowTop - Math.floor(viewportH / 2) + VS.rowHeight);
+        window.scrollTo({ top: target, behavior: 'auto' });
+        // rerenderContent will fire via the scroll handler, which re-applies
+        // find-hit/find-active classes since it consults find.hits directly.
+        requestAnimationFrame(rerenderContent);
+    }
+
+    function navigateHit(delta) {
+        if (find.hits.length === 0) { return; }
+        find.activeHit = (find.activeHit + delta + find.hits.length) % find.hits.length;
+        updateFindCount();
+        scrollToActiveHit();
+    }
+
+    function showFindWidget() {
+        if (!findWidget) { return; }
+        find.visible = true;
+        findWidget.hidden = false;
+        // Pre-fill with selected text if any, else keep previous query.
+        const sel = window.getSelection && window.getSelection().toString().trim();
+        if (sel) {
+            findInput.value = sel;
+            find.query = sel;
+            recomputeFindHits();
+        }
+        findInput.focus();
+        findInput.select();
+        rerenderContent();
+    }
+
+    function hideFindWidget() {
+        if (!findWidget) { return; }
+        find.visible = false;
+        findWidget.hidden = true;
+        // 清掉高亮,但保留 query/hits(再次 Ctrl+F 可继续)。
+        rerenderContent();
+    }
+
+    if (findInput) {
+        findInput.addEventListener('input', () => {
+            find.query = findInput.value;
+            recomputeFindHits();
+            scrollToActiveHit();
+        });
+        findInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                navigateHit(e.shiftKey ? -1 : 1);
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                hideFindWidget();
+            }
+        });
+    }
+    if (findPrevBtn) { findPrevBtn.addEventListener('click', () => navigateHit(-1)); }
+    if (findNextBtn) { findNextBtn.addEventListener('click', () => navigateHit(1)); }
+    if (findCloseBtn) { findCloseBtn.addEventListener('click', hideFindWidget); }
+    if (findCaseBtn) {
+        findCaseBtn.addEventListener('click', () => {
+            find.caseSensitive = !find.caseSensitive;
+            findCaseBtn.classList.toggle('active', find.caseSensitive);
+            recomputeFindHits();
+            rerenderContent();
+        });
+    }
+
     function maybeLoadMore() {
         if (loadingMore) { return; }
         if (totalCount <= 0 || loadedCount >= totalCount) { return; }
@@ -92,6 +221,13 @@
                 // 真实的 scroll container 是 window/body,不是 #resultsList
                 window.scrollTo(0, 0);
                 updatePaginationLabel();
+                // 新一轮搜索,清掉 find 状态(input 清空、关窗、hits 重置)。
+                if (findInput) { findInput.value = ''; }
+                find.query = '';
+                find.hits = [];
+                find.hitSet = new Set();
+                find.activeHit = -1;
+                hideFindWidget();
                 rerenderContent();
                 break;
             case 'appendResults':
@@ -106,6 +242,10 @@
                 }
                 loadingMore = false;
                 updatePaginationLabel();
+                // 有新 entries 并且 find 正开着 → 把新范围也扫一遍补进 hits。
+                if (find.visible && find.query) {
+                    recomputeFindHits();
+                }
                 rerenderContent();
                 break;
             case 'highlightEntry':
@@ -134,6 +274,12 @@
                 manualHighlights = [];
                 rerenderContent();
                 syncHighlightsToExtension();
+                break;
+            }
+            case 'openFind': {
+                // Extension-triggered Ctrl+F route (keybinding bound to
+                // siSearch.findInResults when this panel has focus).
+                showFindWidget();
                 break;
             }
         }
@@ -167,6 +313,19 @@
         row.dataset.index = String(entry.globalIndex);
         row.dataset.file = entry.filePath;
         row.dataset.line = String(entry.lineNumber);
+
+        // Find 高亮:只在 find widget 可见时标记。activeHit 拿强调色,其余 hit 拿浅色。
+        // entry.globalIndex 与 allEntries 下标同值(按顺序 append),find.hits 存的是
+        // allEntries 下标,所以直接比较即可,不必 indexOf 扫数组。
+        if (find.visible && find.hits.length > 0) {
+            const entryPos = entry.globalIndex;
+            const activeEntryIdx = find.activeHit >= 0 ? find.hits[find.activeHit] : -1;
+            if (entryPos === activeEntryIdx) {
+                row.classList.add('find-active');
+            } else if (find.hitSet && find.hitSet.has(entryPos)) {
+                row.classList.add('find-hit');
+            }
+        }
 
         const jumpBtn = document.createElement('span');
         jumpBtn.className = 'jump-btn';
@@ -342,6 +501,28 @@
     //   - 滚动搜索结果列表 (继续浏览意图)
     //   - 点击预览框之外的任何地方 (也可能是左键点击别处)
     document.addEventListener('keydown', (e) => {
+        // Ctrl+F / Cmd+F:打开 in-panel find widget。webview 默认不提供原生 find,
+        // 我们自己接管。焦点在 find input 里时让 input 自己处理 Enter/Esc。
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+            e.preventDefault();
+            e.stopPropagation();
+            showFindWidget();
+            return;
+        }
+        // F3 / Shift+F3:在 find 可见时循环命中项,跟 VS Code 编辑器一致。
+        if (find.visible && e.key === 'F3') {
+            e.preventDefault();
+            e.stopPropagation();
+            navigateHit(e.shiftKey ? -1 : 1);
+            return;
+        }
+        // Esc:关 find(但 input 内自己的 Esc 处理器先跑,这里是 document 级兜底)
+        if (find.visible && e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            hideFindWidget();
+            return;
+        }
         // Alt+J:在搜索结果面板里跳到"当前选中行"对应的源代码位置。
         // 双向跳转的"来"方向:编辑器里按 Alt+J 跳到面板 (在 package.json 里绑的 editorTextFocus 时的快捷键);
         // 这里是"去"方向:面板里按 Alt+J 跳回编辑器。
@@ -358,8 +539,9 @@
             }
             return;
         }
-        // 其他任意按键:关预览。
-        if (hoverPreview.style.display !== 'none') {
+        // 其他任意按键:关预览。但如果焦点在 find input 里,不要关 — 用户
+        // 在输框里打字跟"看预览"无关,关掉反而会让 preview 闪烁。
+        if (hoverPreview.style.display !== 'none' && document.activeElement !== findInput) {
             hidePreview();
         }
     }, true); // capture 阶段,确保先于其他处理
