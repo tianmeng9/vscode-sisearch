@@ -50,7 +50,7 @@ code --install-extension sisearch-*.vsix
 ## Known limits
 
 - Electron target version in `.github/workflows/prebuild.yml` is a placeholder
-  (`34.0.0`); update when `engines.vscode` moves.
+  (`39.8.3`); update when `engines.vscode` moves.
 - `linux-arm64` and `win32-arm64` are not yet built. Users on those platforms
   must fall back to the `SI Search: Rebuild Native (SQLite)` command after
   install, or use the universal VSIX (no native rebuild).

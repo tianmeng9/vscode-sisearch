@@ -2,16 +2,14 @@ name: Prebuild Native Modules
 
 # Cross-platform native module prebuild + VSIX packaging matrix.
 #
-# TODO(M9): The Electron target version below is a placeholder matching
-# approximately VS Code stable as of 2026-04 (Electron 34.x). The real value
-# should be derived from the vscode/engines field in package.json at build
-# time, or pinned via a dedicated config file. Update when engines.vscode
-# moves beyond ^1.85.
+# Electron target: VS Code 1.114 ships Electron 39.8.3 (inspected 2026-04-22).
+# When VS Code's Electron version moves, update this target AND the
+# "rebuild-electron" script in package.json.
 #
-# TODO(M9): Add linux-arm64 and win32-arm64 runners (cross-compile or native)
+# TODO: Add linux-arm64 and win32-arm64 runners (cross-compile or native)
 # once the x64 matrix is proven green.
 #
-# Status: first pass, untested on GitHub Actions runners. M9 iterates.
+# Status: first pass, untested on GitHub Actions runners.
 
 on:
   workflow_dispatch:
@@ -58,7 +56,7 @@ jobs:
         env:
           # VS Code 1.85+ ships Electron ~28-34 depending on release channel.
           # Hardcoded placeholder; see TODO at top of file.
-          npm_config_target: '34.0.0'
+          npm_config_target: '39.8.3'
           npm_config_runtime: 'electron'
           npm_config_arch: ${{ matrix.arch }}
           npm_config_target_arch: ${{ matrix.arch }}

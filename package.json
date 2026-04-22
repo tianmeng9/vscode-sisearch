@@ -242,7 +242,12 @@
         },
         "siSearch.search.duringSyncBehavior": {
           "type": "string",
-          "enum": ["prompt-grep-fallback", "prompt-cancel", "grep-fallback", "cancel"],
+          "enum": [
+            "prompt-grep-fallback",
+            "prompt-cancel",
+            "grep-fallback",
+            "cancel"
+          ],
           "default": "prompt-grep-fallback",
           "description": "Behavior when a symbol search is issued while the index is currently being synchronized. prompt-grep-fallback (default): ask the user; choosing 'use text search' falls back to ripgrep. prompt-cancel: ask the user; choosing returns no results. grep-fallback: silently fall back to ripgrep. cancel: silently return empty results. Subsequent searches within 1 second reuse the user's last choice without re-prompting, so the dialog doesn't spam while the user types."
         },
@@ -264,7 +269,8 @@
     "test": "node ./out/test/runTest.js",
     "bench:sync": "node ./out/test/benchmark/syncBench.js",
     "rebuild": "npm rebuild better-sqlite3",
-    "rebuild-electron": "electron-rebuild -f -w better-sqlite3",
+    "rebuild-electron": "electron-rebuild -v 39.8.3 -f -w better-sqlite3",
+    "postinstall": "npm run rebuild-electron || echo 'electron-rebuild failed; run npm run rebuild-electron manually'",
     "package": "vsce package",
     "verify-sqlite": "node scripts/verify-sqlite.js"
   },
@@ -282,7 +288,7 @@
   "dependencies": {
     "@vscode/codicons": "^0.0.45",
     "@vscode/ripgrep": "^1.15.0",
-    "better-sqlite3": "^11.7.0",
+    "better-sqlite3": "^12.9.0",
     "shiki": "^4.0.2",
     "tree-sitter-c": "^0.24.1",
     "tree-sitter-cpp": "^0.23.4",
