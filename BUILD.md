@@ -54,3 +54,35 @@ code --install-extension sisearch-*.vsix
 - `linux-arm64` and `win32-arm64` are not yet built. Users on those platforms
   must fall back to the `SI Search: Rebuild Native (SQLite)` command after
   install, or use the universal VSIX (no native rebuild).
+
+## M9 trial-package findings
+
+Local `npx @vscode/vsce package` run (2026-04-22):
+
+- VSIX size: **12 MB** (2666 files) — down from an accidental 31 MB when
+  `.worktrees/` leaked in.
+- `.vscodeignore` now excludes `.worktrees/`, `.sisearch/`, `docs/`,
+  `scripts/`, `BUILD.md`, dev-only `node_modules` (typescript, @types,
+  mocha, @vscode/test-electron, @vscode/vsce, @electron/rebuild), plus
+  better-sqlite3 `deps/` / `src/` / `docs/` / `benchmark/`.
+- Bundled `better_sqlite3.node` is the **Node build** (2.0 MB), not Electron
+  — sufficient for VSIX-shape validation (this task) but end users will need
+  a matching Electron prebuild. That is delivered by the GitHub Actions
+  matrix in `.github/workflows/prebuild.yml`, not by this local package.
+- Warnings at pack time (non-fatal, tracked for real publish):
+  - `LICENSE / LICENSE.md / LICENSE.txt not found` — add a LICENSE file
+    before `vsce publish`.
+  - 426 JS files, no bundler — Marketplace performance nag; bundling with
+    esbuild / webpack is a future optimization, not a blocker.
+- Added to `package.json`: `repository` field pointing at
+  `https://github.com/tianmeng9/vscode-sisearch.git` (vsce requires it for
+  publish). URL is a placeholder — confirm the real repo URL before publish.
+- `.vsix` is already excluded from git via `.gitignore`.
+
+### Before running `vsce publish`
+
+1. Add a `LICENSE` file at repo root.
+2. Confirm `repository.url` in `package.json` points at the real GitHub repo.
+3. Replace the local-Node `.node` with matching Electron prebuilds from the
+   CI matrix (see *CI release workflow* above) — don't publish the local
+   VSIX, it won't load in VS Code.
