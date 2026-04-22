@@ -269,10 +269,15 @@ export class SymbolIndex {
                 } catch {
                     // drain 失败(worker fatal)时不抛出 —— 让 status 回退逻辑走下去。
                 }
+                // M10d: drain 之后再显式 TRUNCATE checkpoint,把 -wal 压到 0 字节。
+                // synchronous=OFF 下 WAL 只靠 auto-checkpoint 会长期膨胀;主动收尾一次
+                // 也把磁盘占用还给用户。checkpoint 失败同样不向上抛。
+                try {
+                    await writerClient.checkpoint();
+                } catch {
+                    // ignore —— checkpoint 失败不影响 sync 结果的可见性(WAL 仍可被读)。
+                }
             }
-            // 注:writer worker 的 SQLite 连接自己(WAL 模式)会周期 auto-checkpoint。
-            // 我们不在 readonly 主线程 handle 上调 checkpoint —— pragma 会 fail。
-            // 若需 TRUNCATE 级 checkpoint,应在 writer 侧发一个 close+open 或显式消息(M10d)。
         }
 
         this.dirtyFiles.clear();

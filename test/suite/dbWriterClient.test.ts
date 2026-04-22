@@ -67,7 +67,7 @@ suite('DbWriterClient', () => {
         w.emit('message', { type: 'batchDone', seq: 1 });
         w.emit('message', { type: 'batchDone', seq: 2 });
         // drain is seq 3
-        w.emit('message', { type: 'drainDone', seq: 3 });
+        w.emit('message', { type: 'ack', seq: 3 });
         await drainPromise;  // should resolve without throwing
     });
 
@@ -85,7 +85,7 @@ suite('DbWriterClient', () => {
         drainPromise.then(() => { resolved = true; });
         await new Promise(r => setImmediate(r));
         assert.strictEqual(resolved, false);
-        w.emit('message', { type: 'drainDone', seq: 2 });
+        w.emit('message', { type: 'ack', seq: 2 });
         await drainPromise;
     });
 
@@ -98,7 +98,7 @@ suite('DbWriterClient', () => {
         const drainPromise = c.drain();
         const w = spy.instance();
         w.emit('message', { type: 'error', seq: 1, message: 'disk full' });
-        w.emit('message', { type: 'drainDone', seq: 2 });
+        w.emit('message', { type: 'ack', seq: 2 });
         await drainPromise;
         assert.deepStrictEqual(c.getErrors(), ['disk full']);
     });
@@ -115,6 +115,28 @@ suite('DbWriterClient', () => {
         await assert.rejects(drainPromise, /worker crashed/);
     });
 
+    test('checkpoint posts checkpoint message and resolves on ack', async () => {
+        const spy = makeSpy();
+        const c = new DbWriterClient({
+            workerScriptPath: '/fake', dbPath: ':memory:', WorkerCtor: spy.WorkerCtor,
+        });
+        c.postBatch({ metadata: [], symbols: [], deletedRelativePaths: [] });
+        const ckptPromise = c.checkpoint();
+        // checkpoint is seq 2 (postBatch took seq 1)
+        const ckptMsg = spy.posted.find((m: any) => m.type === 'checkpoint');
+        assert.ok(ckptMsg, 'checkpoint message should have been posted');
+        assert.strictEqual(ckptMsg.seq, 2);
+        const w = spy.instance();
+        w.emit('message', { type: 'batchDone', seq: 1 });
+        // Before ack, checkpoint promise is still pending
+        let resolved = false;
+        ckptPromise.then(() => { resolved = true; });
+        await new Promise(r => setImmediate(r));
+        assert.strictEqual(resolved, false);
+        w.emit('message', { type: 'ack', seq: 2 });
+        await ckptPromise;
+    });
+
     test('dispose drains then terminates', async () => {
         const spy = makeSpy();
         const c = new DbWriterClient({
@@ -124,7 +146,7 @@ suite('DbWriterClient', () => {
         const disposePromise = c.dispose();
         const w = spy.instance();
         w.emit('message', { type: 'batchDone', seq: 1 });
-        w.emit('message', { type: 'drainDone', seq: 2 });
+        w.emit('message', { type: 'ack', seq: 2 });
         await disposePromise;
         // a close message was posted
         const closeMsgs = spy.posted.filter((m: any) => m.type === 'close');
@@ -138,7 +160,7 @@ suite('DbWriterClient', () => {
         });
         const w = spy.instance();
         const p1 = c.dispose();
-        w.emit('message', { type: 'drainDone', seq: 1 });
+        w.emit('message', { type: 'ack', seq: 1 });
         await p1;
         await c.dispose();  // must not throw
     });

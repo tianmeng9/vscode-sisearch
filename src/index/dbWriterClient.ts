@@ -21,12 +21,14 @@ export interface WriterClientOptions {
 }
 
 interface OutMessage {
-    type: 'batch' | 'drain' | 'close';
+    type: 'batch' | 'drain' | 'checkpoint' | 'close';
     seq?: number;
     batch?: WriteBatch;
 }
 
-interface PendingDrain {
+/** Shared waiter record for drain() and checkpoint() — worker replies with
+ *  `{ type: 'ack', seq }` in both cases; client resolves the matching entry. */
+interface PendingAck {
     seq: number;
     resolve: () => void;
     reject: (err: Error) => void;
@@ -42,7 +44,7 @@ export class DbWriterClient {
     };
     private nextSeq = 1;
     private pendingBatches = new Set<number>();
-    private pendingDrains: PendingDrain[] = [];
+    private pendingAcks: PendingAck[] = [];
     private disposed = false;
     private fatalError: Error | undefined;
     private errors: string[] = [];
@@ -76,8 +78,23 @@ export class DbWriterClient {
         if (this.disposed) { return; }
         const seq = this.nextSeq++;
         return new Promise<void>((resolve, reject) => {
-            this.pendingDrains.push({ seq, resolve, reject });
+            this.pendingAcks.push({ seq, resolve, reject });
             this.worker.postMessage({ type: 'drain', seq });
+        });
+    }
+
+    /** M10d: Requests a WAL TRUNCATE checkpoint in the worker. Resolves when
+     *  the worker has finished the checkpoint. Ordered with earlier batches;
+     *  like drain(), all previously-posted batches are durable when this
+     *  resolves. Façade calls this in synchronize()'s finally block so the
+     *  on-disk -wal file is compacted after each sync burst. */
+    async checkpoint(): Promise<void> {
+        if (this.fatalError) { throw this.fatalError; }
+        if (this.disposed) { return; }
+        const seq = this.nextSeq++;
+        return new Promise<void>((resolve, reject) => {
+            this.pendingAcks.push({ seq, resolve, reject });
+            this.worker.postMessage({ type: 'checkpoint', seq });
         });
     }
 
@@ -106,12 +123,12 @@ export class DbWriterClient {
     private handleMessage(msg: any): void {
         if (msg?.type === 'batchDone' && typeof msg.seq === 'number') {
             this.pendingBatches.delete(msg.seq);
-        } else if (msg?.type === 'drainDone' && typeof msg.seq === 'number') {
-            // Find the drain with this seq and resolve it
-            const idx = this.pendingDrains.findIndex(d => d.seq === msg.seq);
+        } else if (msg?.type === 'ack' && typeof msg.seq === 'number') {
+            // Unified ack for drain + checkpoint: resolve the matching waiter.
+            const idx = this.pendingAcks.findIndex(d => d.seq === msg.seq);
             if (idx >= 0) {
-                const d = this.pendingDrains[idx];
-                this.pendingDrains.splice(idx, 1);
+                const d = this.pendingAcks[idx];
+                this.pendingAcks.splice(idx, 1);
                 d.resolve();
             }
         } else if (msg?.type === 'error') {
@@ -120,14 +137,22 @@ export class DbWriterClient {
             if (typeof msg.seq === 'number') {
                 // Treat a per-batch error as "batch done" so drain doesn't hang
                 this.pendingBatches.delete(msg.seq);
+                // If the errored seq was actually a drain/checkpoint, also
+                // release its waiter so callers don't hang.
+                const idx = this.pendingAcks.findIndex(d => d.seq === msg.seq);
+                if (idx >= 0) {
+                    const d = this.pendingAcks[idx];
+                    this.pendingAcks.splice(idx, 1);
+                    d.reject(new Error(text));
+                }
             }
         }
     }
 
     private handleFatal(err: Error): void {
         this.fatalError = err;
-        // Reject all outstanding drains
-        for (const d of this.pendingDrains) { d.reject(err); }
-        this.pendingDrains = [];
+        // Reject all outstanding drain/checkpoint waiters
+        for (const d of this.pendingAcks) { d.reject(err); }
+        this.pendingAcks = [];
     }
 }

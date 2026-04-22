@@ -151,6 +151,19 @@ export class DbBackend {
         this.db.pragma('wal_checkpoint(TRUNCATE)');
     }
 
+    /**
+     * Tunes pragmas for bulk write workload. Called by dbWriterWorker once at
+     * startup. synchronous=OFF trades crash safety for ~3x write throughput;
+     * since the recovery path is "user re-syncs", the trade is acceptable.
+     * cache_size raised to 256 MB — per-connection, allocated lazily as pages
+     * are touched, so cost is bounded by actual working set.
+     */
+    pragmaForSyncMode(): void {
+        if (!this.db) { return; }
+        this.db.pragma('synchronous = OFF');
+        this.db.pragma('cache_size = -262144');  // 256 MB
+    }
+
     getSchemaVersion(): number {
         const row = this.db!.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string } | undefined;
         return row ? parseInt(row.value, 10) : 0;

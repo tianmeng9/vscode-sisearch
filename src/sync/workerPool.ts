@@ -9,9 +9,12 @@
 import type { IndexedFile, SymbolEntry } from '../index/indexTypes';
 
 /** 每个批次的文件数。太小 → IPC 开销; 太大 → 进度粒度粗 + native 分配爆发。
- *  取证：33k 文件 sync 中 VS Code 闪退,怀疑是 symbolParser 里 per-file `new ParserClass()`
- *  在一次 parseBatch 内爆发式创建销毁导致 WASM native 堆波动。先降到 32 试试。 */
-const BATCH_SIZE = 32;
+ *  历史:33k 文件 sync 中 VS Code 曾闪退,当时 symbolParser 里 per-file `new ParserClass()`
+ *  在一次 parseBatch 内爆发式创建销毁导致 WASM native 堆波动;临时降到 32。
+ *  M10d 现状:Phase 5D 的 onSymbol 流式 + M3 全量索引已消除 per-file Parser 泄漏,
+ *  M10c 把 DB 写从主线程搬到 dbWriterWorker,主线程不再是瓶颈。把 BATCH_SIZE 提到 128
+ *  以减小 IPC 调用频次(5k 文件的 batch 数从 157 → 40),主线程 message-loop 压力↓。 */
+const BATCH_SIZE = 128;
 
 export interface ParseBatchResult {
     symbols: SymbolEntry[];
