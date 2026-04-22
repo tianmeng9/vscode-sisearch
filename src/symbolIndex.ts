@@ -233,6 +233,12 @@ export class SymbolIndex {
         });
     }
 
+    countMatches(query: string, workspaceRoot: string, options: SearchOptions): number {
+        if (this._status !== 'ready' && this._status !== 'stale') { return 0; }
+        const db = this.getOrCreateDb(workspaceRoot);
+        return db.countMatches(query, options);
+    }
+
     async saveToDisk(_workspaceRoot: string): Promise<void> {
         // no-op: DbBackend 事务已经把每个 writeBatch 落盘;保留方法签名供 commands.ts 等老调用点。
     }

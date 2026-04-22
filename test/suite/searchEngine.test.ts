@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { executeSearch } from '../../src/search/searchEngine';
+import { executeSearch, executeSearchWithIndex } from '../../src/search/searchEngine';
 import { SearchOptions } from '../../src/types';
 
 suite('SearchEngine', () => {
@@ -73,5 +73,30 @@ suite('SearchEngine', () => {
         assert.ok(first.lineNumber > 0);
         assert.ok(first.lineContent.includes('printf'));
         assert.ok(first.relativePath === 'test.c');
+    });
+
+    test('executeSearchWithIndex passes offset to symbolIndex.searchSymbols', async () => {
+        const calls: any[] = [];
+        const fakeIndex = {
+            status: 'ready' as const,
+            searchSymbols: (q: string, r: string, o: any, p: any) => { calls.push(p); return []; },
+            countMatches: () => 0,
+            isSyncInProgress: () => false,
+        } as any;
+        await executeSearchWithIndex('q', '/root', { caseSensitive: false, wholeWord: false, regex: false },
+            ['.c'], [], fakeIndex, 200);
+        assert.strictEqual(calls[0]?.offset, 200);
+    });
+
+    test('returns totalCount from countMatches when results non-empty', async () => {
+        const fakeIndex = {
+            status: 'ready' as const,
+            searchSymbols: () => [{ filePath: '/a', relativePath: 'a', lineNumber: 1, lineContent: '', matchStart: 0, matchLength: 1 }],
+            countMatches: () => 1234,
+            isSyncInProgress: () => false,
+        } as any;
+        const r = await executeSearchWithIndex('q', '/root', { caseSensitive: false, wholeWord: false, regex: false },
+            ['.c'], [], fakeIndex, 0);
+        assert.strictEqual(r.totalCount, 1234);
     });
 });

@@ -58,7 +58,7 @@ suite('messageRouter', () => {
             /* stub */
         } as any;
 
-        const executeSearch = async () => { calls.push('executeSearch'); return []; };
+        const executeSearch = async () => { calls.push('executeSearch'); return { results: [], totalCount: 0 }; };
         const openResultInEditor = async () => { calls.push('openResult'); };
         const tokenizeFile = async () => ({ lines: [], bg: '' });
         const updateSidebarHistory = () => {};

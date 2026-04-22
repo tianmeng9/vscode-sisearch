@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as readline from 'readline';
+import * as vscode from 'vscode';
 import { SearchOptions, SearchResult } from '../types';
 import { rgPath } from '@vscode/ripgrep';
 import { SymbolIndex } from '../symbolIndex';
@@ -166,12 +167,21 @@ export async function executeSearchWithIndex(
     includeExtensions: string[],
     excludePatterns: string[],
     index: SymbolIndex | null,
+    offset: number = 0,
     signal?: AbortSignal,
-): Promise<SearchResult[]> {
+): Promise<{ results: SearchResult[]; totalCount: number }> {
+    const limit = vscode.workspace
+        .getConfiguration('siSearch.search')
+        .get<number>('maxResults', 200);
+
     if (index && (index.status === 'ready' || index.status === 'stale')) {
-        const results = index.searchSymbols(query, workspaceRoot, options);
-        if (results.length > 0) { return results; }
+        const results = index.searchSymbols(query, workspaceRoot, options, { limit, offset });
+        if (results.length > 0) {
+            const totalCount = index.countMatches(query, workspaceRoot, options);
+            return { results, totalCount };
+        }
     }
     // Fallback to ripgrep
-    return executeSearch(query, workspaceRoot, options, includeExtensions, excludePatterns, signal);
+    const fallback = await executeSearch(query, workspaceRoot, options, includeExtensions, excludePatterns, signal);
+    return { results: fallback, totalCount: fallback.length };
 }

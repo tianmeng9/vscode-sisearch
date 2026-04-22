@@ -17,7 +17,7 @@ export interface MessageRouterDeps {
     editorDecorations: EditorDecorations;
     highlightsTreeProvider: HighlightsTreeProvider;
     symbolIndex: SymbolIndex;
-    executeSearch: (query: string, workspaceRoot: string, options: SearchOptions, extensions: string[], excludes: string[], symbolIndex: SymbolIndex) => Promise<SearchResult[]>;
+    executeSearch: (query: string, workspaceRoot: string, options: SearchOptions, extensions: string[], excludes: string[], symbolIndex: SymbolIndex, offset?: number) => Promise<{ results: SearchResult[]; totalCount: number }>;
     openResultInEditor: (result: SearchResult) => Promise<void>;
     tokenizeFile: (content: string, languageId: string) => Promise<{ lines: TokenizedLine[]; bg?: string }>;
     updateSidebarHistory: (store: SearchStore, sidebar: SidebarProvider) => void;
@@ -53,10 +53,10 @@ export function wireMessageRouter(
                 sidebarProvider.postMessage({ command: 'searchStarted' });
 
                 try {
-                    const results = await executeSearch(msg.query, workspaceRoot, msg.options, extensions, excludes, symbolIndex);
+                    const { results, totalCount } = await executeSearch(msg.query, workspaceRoot, msg.options, extensions, excludes, symbolIndex);
 
-                    store.addSearch(msg.query, msg.options, results, msg.mode);
-                    sidebarProvider.postMessage({ command: 'searchComplete', count: results.length });
+                    store.addSearch(msg.query, msg.options, results, msg.mode, { totalCount, loadedCount: results.length });
+                    sidebarProvider.postMessage({ command: 'searchComplete', count: totalCount });
                     updateSidebarHistory(store, sidebarProvider);
 
                     const entries = store.getActiveResultsPanelEntries();
