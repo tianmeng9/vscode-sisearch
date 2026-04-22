@@ -125,4 +125,40 @@ suite('SearchStore', () => {
 
         assert.deepStrictEqual(entries.map(e => e.globalIndex), [0, 1, 2]);
     });
+
+    // M4 Task 4.1 — pagination metadata
+    test('addSearch records totalCount and loadedCount', () => {
+        const results = Array.from({ length: 200 }, (_, i) =>
+            makeResult(`f${i}.c`, 1, `sym${i}`)
+        );
+        store.addSearch('q', defaultOpts, results, 'replace',
+                        { totalCount: 1500, loadedCount: 200 });
+        const active = store.getActive();
+        assert.ok(active, 'active entry should exist');
+        assert.strictEqual(active?.totalCount, 1500);
+        assert.strictEqual(active?.loadedCount, 200);
+    });
+
+    test('appendToActive advances loadedCount but preserves totalCount', () => {
+        store.addSearch('q', defaultOpts,
+                        [makeResult('a.c', 1, 'a')],
+                        'replace',
+                        { totalCount: 100, loadedCount: 1 });
+        store.appendToActive([
+            makeResult('b.c', 1, 'b'),
+            makeResult('c.c', 1, 'c'),
+        ]);
+        const active = store.getActive();
+        assert.strictEqual(active?.loadedCount, 3);
+        assert.strictEqual(active?.totalCount, 100, 'totalCount must not change');
+        assert.strictEqual(active?.results.length, 3);
+    });
+
+    test('addSearch without pagination defaults loadedCount=totalCount=results.length', () => {
+        const results = [makeResult('a.c', 1, 'a'), makeResult('a.c', 2, 'b')];
+        store.addSearch('q', defaultOpts, results, 'replace');
+        const active = store.getActive();
+        assert.strictEqual(active?.loadedCount, 2);
+        assert.strictEqual(active?.totalCount, 2);
+    });
 });

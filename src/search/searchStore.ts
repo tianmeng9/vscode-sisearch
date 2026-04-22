@@ -12,13 +12,23 @@ export class SearchStore {
     private navigationIndex = -1;
     private listeners: Array<() => void> = [];
 
-    addSearch(query: string, options: SearchOptions, results: SearchResult[], mode: SearchMode): string {
+    addSearch(
+        query: string,
+        options: SearchOptions,
+        results: SearchResult[],
+        mode: SearchMode,
+        pagination?: { totalCount: number; loadedCount: number },
+    ): string {
+        const total = pagination?.totalCount ?? results.length;
+        const loaded = pagination?.loadedCount ?? results.length;
         const entry: SearchHistoryEntry = {
             id: generateId(),
             query,
             options,
             results: [...results],
             timestamp: Date.now(),
+            totalCount: total,
+            loadedCount: loaded,
         };
 
         this.history.push(entry);
@@ -33,6 +43,27 @@ export class SearchStore {
         this.navigationIndex = -1;
         this.emit();
         return entry.id;
+    }
+
+    /** M4: returns the currently-active history entry, or undefined. */
+    getActive(): SearchHistoryEntry | undefined {
+        if (this.activeHistoryId === null) { return undefined; }
+        return this.history.find(e => e.id === this.activeHistoryId);
+    }
+
+    /**
+     * M4: append more results to the active entry (for pagination / loadMore).
+     * Bumps loadedCount by `more.length` but leaves totalCount unchanged.
+     * No-op if there is no active entry.
+     */
+    appendToActive(more: SearchResult[]): void {
+        if (more.length === 0) { return; }
+        const active = this.getActive();
+        if (!active) { return; }
+        active.results.push(...more);
+        active.loadedCount = (active.loadedCount ?? active.results.length - more.length) + more.length;
+        this.activeResults = [...this.activeResults, ...more];
+        this.emit();
     }
 
     getHistory(): SearchHistoryEntry[] {

@@ -33,6 +33,11 @@ export interface SearchHistoryEntry {
     options: SearchOptions;
     results: SearchResult[];
     timestamp: number;
+    /** Total matches for this query on the backend side, before pagination.
+     *  Undefined = legacy entry;reader should treat absence as results.length. */
+    totalCount?: number;
+    /** Number of results currently loaded in `results`. Undefined = results.length. */
+    loadedCount?: number;
 }
 
 /** Message types from sidebar webview to extension */
