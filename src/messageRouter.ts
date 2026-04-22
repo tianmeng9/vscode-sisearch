@@ -60,7 +60,7 @@ export function wireMessageRouter(
                     updateSidebarHistory(store, sidebarProvider);
 
                     const entries = store.getActiveResultsPanelEntries();
-                    resultsPanel.showResults(entries, msg.query);
+                    resultsPanel.showResults(entries, msg.query, { totalCount, loadedCount: results.length });
 
                     editorDecorations.updateResults(store.getActiveResults());
                 } catch (err: unknown) {
@@ -75,7 +75,13 @@ export function wireMessageRouter(
                 updateSidebarHistory(store, sidebarProvider);
                 const entries = store.getActiveResultsPanelEntries();
                 const activeEntry = store.getHistory().find(e => e.id === msg.id);
-                resultsPanel.showResults(entries, activeEntry?.query || '');
+                const pagination = activeEntry
+                    ? {
+                        totalCount: activeEntry.totalCount ?? activeEntry.results.length,
+                        loadedCount: activeEntry.loadedCount ?? activeEntry.results.length,
+                    }
+                    : undefined;
+                resultsPanel.showResults(entries, activeEntry?.query || '', pagination);
                 editorDecorations.updateResults(store.getActiveResults());
                 break;
             }
@@ -91,6 +97,34 @@ export function wireMessageRouter(
                 resultsPanel.postMessage({ command: 'clearHighlights' });
                 editorDecorations.clearDecorations();
                 highlightsTreeProvider.update([]);
+                break;
+            }
+            case 'loadMore': {
+                const active = store.getActive();
+                if (!active) { break; }
+                const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                if (!workspaceRoot) { break; }
+
+                const config = vscode.workspace.getConfiguration('siSearch');
+                const extensions = config.get<string[]>('includeFileExtensions', ['.c', '.h', '.cpp', '.hpp']);
+                const excludes = config.get<string[]>('excludePatterns', ['**/build/**', '**/.git/**']);
+
+                const offset = active.loadedCount ?? active.results.length;
+                try {
+                    const { results: more } = await executeSearch(
+                        active.query, workspaceRoot, active.options, extensions, excludes, symbolIndex, offset,
+                    );
+                    store.appendToActive(more);
+
+                    const newLoadedCount = offset + more.length;
+                    const totalCount = active.totalCount ?? newLoadedCount;
+                    const newEntries = more.map((r, i) => ({ ...r, globalIndex: offset + i }));
+                    resultsPanel.appendResults(newEntries, totalCount, newLoadedCount);
+                    editorDecorations.updateResults(store.getActiveResults());
+                } catch (err: unknown) {
+                    const em = err instanceof Error ? err.message : String(err);
+                    vscode.window.showErrorMessage(`SI Search loadMore error: ${em}`);
+                }
                 break;
             }
         }

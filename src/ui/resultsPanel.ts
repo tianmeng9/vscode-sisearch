@@ -54,17 +54,38 @@ export class ResultsPanel {
         return this.panel !== undefined;
     }
 
-    showResults(results: ResultsPanelEntry[], query: string): void {
+    showResults(
+        results: ResultsPanelEntry[],
+        query: string,
+        pagination?: { totalCount: number; loadedCount: number },
+    ): void {
         this.show();
         const config = vscode.workspace.getConfiguration('siSearch');
         const colors = config.get<string[]>('highlightColors', []);
         const box = config.get<boolean>('highlightBox', true);
-        this.postMessage({ command: 'showResults', results, query, highlightColors: colors, highlightBox: box });
+        this.postMessage({
+            command: 'showResults',
+            results,
+            query,
+            highlightColors: colors,
+            highlightBox: box,
+            totalCount: pagination?.totalCount ?? results.length,
+            loadedCount: pagination?.loadedCount ?? results.length,
+        });
     }
 
-    appendResults(results: ResultsPanelEntry[], query: string): void {
-        this.show();
-        this.postMessage({ command: 'appendResults', results, query });
+    appendResults(
+        results: ResultsPanelEntry[],
+        totalCount: number,
+        loadedCount: number,
+    ): void {
+        // If panel isn't open, nothing to append to;guard silently.
+        this.panel?.webview.postMessage({
+            command: 'appendResults',
+            results,
+            totalCount,
+            loadedCount,
+        });
     }
 
     highlightEntry(index: number): void {

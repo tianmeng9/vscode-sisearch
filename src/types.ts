@@ -45,7 +45,8 @@ export type SidebarMessage =
     | { command: 'search'; query: string; options: SearchOptions; mode: SearchMode; filesToInclude?: string[]; filesToExclude?: string[] }
     | { command: 'selectHistory'; id: string }
     | { command: 'deleteHistory'; id: string }
-    | { command: 'clearAllHighlights' };
+    | { command: 'clearAllHighlights' }
+    | { command: 'loadMore' };
 
 /** Message types from extension to sidebar webview */
 export type SidebarUpdate =
@@ -55,8 +56,8 @@ export type SidebarUpdate =
 
 /** Message types from extension to results panel webview */
 export type ResultsPanelUpdate =
-    | { command: 'showResults'; results: ResultsPanelEntry[]; query: string }
-    | { command: 'appendResults'; results: ResultsPanelEntry[]; query: string }
+    | { command: 'showResults'; results: ResultsPanelEntry[]; query: string; totalCount?: number; loadedCount?: number }
+    | { command: 'appendResults'; results: ResultsPanelEntry[]; query: string; totalCount?: number; loadedCount?: number }
     | { command: 'highlightEntry'; index: number }
     | { command: 'clearHighlights' };
 
