@@ -6,6 +6,7 @@ import type { SearchOptions, SearchResult } from '../types';
 import { encodeSymbolKind, decodeSymbolKind } from './symbolKindCodec';
 import { escapeFtsLiteral, extractLiteralTokens } from './ftsQueryBuilder';
 import { LineContentReader } from './lineContentReader';
+import { writerDiag } from './writerDiag';
 
 function sanitizeSymbolName(raw: string): string {
     if (raw == null) { throw new Error('symbol name required'); }
@@ -267,12 +268,28 @@ export class DbBackend {
     ): SearchResult[] {
         if (!this.db || !query) { return []; }
 
-        const rows = this.selectForQuery(query, options, pagination);
+        const t0 = Date.now();
+        writerDiag('main', 'query:start', {
+            kind: 'search', query, options, limit: pagination.limit, offset: pagination.offset,
+        });
+        let rows: Array<{ name: string; relativePath: string; lineNumber: number; column: number }>;
+        try {
+            rows = this.selectForQuery(query, options, pagination);
+        } catch (e) {
+            writerDiag('main', 'query:error', {
+                kind: 'search', query, options,
+                message: e instanceof Error ? e.message : String(e),
+                elapsedMs: Date.now() - t0,
+            });
+            throw e;
+        }
+        writerDiag('main', 'query:done', {
+            kind: 'search', query, rowCount: rows.length, elapsedMs: Date.now() - t0,
+        });
+
         const out: SearchResult[] = [];
         for (const row of rows) {
-            // row: { name, relativePath, lineNumber, column }
-            // lineContent 在 façade 层再填;在 DbBackend 层返回空占位
-            const absPath = row.relativePath;   // 替换真实 absPath 在 façade 侧
+            const absPath = row.relativePath;
             const lineContent = '';
             out.push({
                 filePath: absPath,
@@ -288,7 +305,22 @@ export class DbBackend {
 
     countMatches(query: string, options: SearchOptions): number {
         if (!this.db || !query) { return 0; }
-        return this.selectCountForQuery(query, options);
+        const t0 = Date.now();
+        writerDiag('main', 'query:start', { kind: 'count', query, options });
+        try {
+            const n = this.selectCountForQuery(query, options);
+            writerDiag('main', 'query:done', {
+                kind: 'count', query, rowCount: n, elapsedMs: Date.now() - t0,
+            });
+            return n;
+        } catch (e) {
+            writerDiag('main', 'query:error', {
+                kind: 'count', query, options,
+                message: e instanceof Error ? e.message : String(e),
+                elapsedMs: Date.now() - t0,
+            });
+            throw e;
+        }
     }
 
     private selectForQuery(
@@ -346,32 +378,52 @@ export class DbBackend {
             return filtered.slice(p.offset, p.offset + p.limit);
         }
         // substring
-        // SQL LIKE 在 SQLite 默认 case-insensitive(仅 ASCII);case-sensitive 路径
-        // 必须 GLOB 或 LIKE + 自定义 collate。GLOB 不支持 ESCAPE 子句(会报
-        // "wrong number of arguments to function GLOB()"),所以 case-sensitive
-        // 用 LIKE + 走 COLLATE BINARY + ESCAPE,case-insensitive 用 LIKE + NOCASE。
+        // 陷阱:SQLite LIKE 对 ASCII 字母**默认 case-insensitive**,COLLATE BINARY
+        // 对 LIKE **无效**(COLLATE 只影响 =、<>、ORDER BY;LIKE 的 case-sens 由
+        // `PRAGMA case_sensitive_like` 控制,不是 COLLATE)。之前的实现用
+        // `LIKE ? COLLATE BINARY` 仍然 case-insensitive,导致 caseSensitive=true
+        // 也会命中 'amdgpu_*'(用户实际遇到的 bug)。
+        //
+        // 修:SQL 侧永远用 LIKE case-insensitive 做 coarse filter(利用 FTS5
+        // token + LIKE prefilter 的性能),case-sensitive 时在 JS 侧再用
+        // includes() 精过滤。200 条 × 字符串包含,几 ms 内的事。
         const tokens = extractLiteralTokens(query);
         const likePattern = '%' + query.replace(/[%_\\]/g, '\\$&') + '%';
-        const collate = options.caseSensitive ? 'BINARY' : 'NOCASE';
+        const postFilter = (rows: any[]): any[] => {
+            if (!options.caseSensitive) { return rows; }
+            return rows.filter(r => typeof r.name === 'string' && r.name.includes(query));
+        };
         if (tokens.length === 0) {
-            // 无可用 token,直接 LIKE 扫全表(上限 10k)
-            return this.db!.prepare(
+            // 无可用 token,直接 LIKE 扫全表(上限 10k);case-sensitive 再 post-filter
+            const rawLimit = options.caseSensitive ? 10000 : p.limit;
+            const raw = this.db!.prepare(
                 `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
                  FROM symbols s JOIN files f ON f.id = s.file_id
-                 WHERE s.name LIKE ? ESCAPE '\\' COLLATE ${collate}
+                 WHERE s.name LIKE ? ESCAPE '\\'
                  ORDER BY f.relative_path, s.line_number
                  LIMIT ? OFFSET ?`
-            ).all(likePattern, p.limit, p.offset) as any;
+            ).all(likePattern, rawLimit, options.caseSensitive ? 0 : p.offset) as any[];
+            const filtered = postFilter(raw);
+            return options.caseSensitive
+                ? filtered.slice(p.offset, p.offset + p.limit)
+                : filtered;
         }
         const fts = tokens.map(escapeFtsLiteral).join(' OR ');
-        return this.db!.prepare(
+        // 同理:case-sensitive 多取 + JS post-filter + slice
+        const rawLimit = options.caseSensitive ? 10000 : p.limit;
+        const rawOffset = options.caseSensitive ? 0 : p.offset;
+        const raw = this.db!.prepare(
             `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
              FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
                               JOIN files f ON f.id = s.file_id
-             WHERE symbols_fts MATCH ? AND s.name LIKE ? ESCAPE '\\' COLLATE ${collate}
+             WHERE symbols_fts MATCH ? AND s.name LIKE ? ESCAPE '\\'
              ORDER BY f.relative_path, s.line_number
              LIMIT ? OFFSET ?`
-        ).all(fts, likePattern, p.limit, p.offset) as any;
+        ).all(fts, likePattern, rawLimit, rawOffset) as any[];
+        const filtered = postFilter(raw);
+        return options.caseSensitive
+            ? filtered.slice(p.offset, p.offset + p.limit)
+            : filtered;
     }
 
     private selectCountForQuery(query: string, options: SearchOptions): number {
@@ -402,17 +454,34 @@ export class DbBackend {
         }
         const tokens = extractLiteralTokens(query);
         const likePattern = '%' + query.replace(/[%_\\]/g, '\\$&') + '%';
-        const collate = options.caseSensitive ? 'BINARY' : 'NOCASE';
+        // LIKE COLLATE BINARY 对 LIKE 无效(见 selectForQuery 里的详细注释)。
+        // case-sensitive 时:只能用 LIKE case-insensitive 粗筛 + JS post-filter
+        // 数 includes()。这里只统计数量,所以 SELECT name 然后 JS 侧 count。
+        if (options.caseSensitive) {
+            if (tokens.length === 0) {
+                const rows = this.db!.prepare(
+                    `SELECT name FROM symbols WHERE name LIKE ? ESCAPE '\\'`
+                ).all(likePattern) as Array<{ name: string }>;
+                return rows.filter(r => r.name.includes(query)).length;
+            }
+            const fts = tokens.map(escapeFtsLiteral).join(' OR ');
+            const rows = this.db!.prepare(
+                `SELECT s.name FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
+                 WHERE symbols_fts MATCH ? AND s.name LIKE ? ESCAPE '\\'`
+            ).all(fts, likePattern) as Array<{ name: string }>;
+            return rows.filter(r => r.name.includes(query)).length;
+        }
+        // case-insensitive:COUNT 直接用 SQL(LIKE 天然 NOCASE for ASCII)
         if (tokens.length === 0) {
             const r = this.db!.prepare(
-                `SELECT COUNT(*) AS c FROM symbols WHERE name LIKE ? ESCAPE '\\' COLLATE ${collate}`
+                `SELECT COUNT(*) AS c FROM symbols WHERE name LIKE ? ESCAPE '\\'`
             ).get(likePattern) as { c: number };
             return r.c;
         }
         const fts = tokens.map(escapeFtsLiteral).join(' OR ');
         const r = this.db!.prepare(
             `SELECT COUNT(*) AS c FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
-             WHERE symbols_fts MATCH ? AND s.name LIKE ? ESCAPE '\\' COLLATE ${collate}`
+             WHERE symbols_fts MATCH ? AND s.name LIKE ? ESCAPE '\\'`
         ).get(fts, likePattern) as { c: number };
         return r.c;
     }

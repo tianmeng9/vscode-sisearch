@@ -370,19 +370,29 @@ export class SymbolIndex {
         if (this._status !== 'ready' && this._status !== 'stale') { return []; }
         const handles = this.getOrCreateHandles(workspaceRoot);
         const canonical = this.canonicalizeRoot(workspaceRoot);
+        const t0 = Date.now();
         const rawResults = handles.readHandle.search(query, options, pagination);
-        return rawResults.map(r => {
+        const tAfterDb = Date.now();
+        const out = rawResults.map(r => {
             const abs = path.join(canonical, r.relativePath);
             const line = this.lineReader.read(abs, r.lineNumber);
             return {
                 ...r,
                 filePath: abs,
                 lineContent: line,
-                // 近似 matchStart/matchLength —— searchEngine 侧会基于 query 再算,M4 纠正。
                 matchStart: 0,
                 matchLength: r.matchLength,
             };
         });
+        const tEnd = Date.now();
+        writerDiag('main', 'query:done', {
+            kind: 'facade.searchSymbols',
+            query, resultCount: out.length,
+            dbMs: tAfterDb - t0,
+            lineReaderMs: tEnd - tAfterDb,
+            totalMs: tEnd - t0,
+        });
+        return out;
     }
 
     countMatches(query: string, workspaceRoot: string, options: SearchOptions): number {

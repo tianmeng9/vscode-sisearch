@@ -44,10 +44,16 @@ export type WriterDiagEvent =
     | 'worker:checkpointAckSent'
     | 'worker:closeReceived'
     | 'worker:error'
-    | 'worker:uncaughtException';
+    | 'worker:uncaughtException'
+    // Query side (main thread readonly path)
+    | 'query:start'
+    | 'query:done'
+    | 'query:error';
 
 function isEnabled(): boolean {
-    return process.env.SISEARCH_WORKER_DIAG === '1';
+    // 临时:强制开启诊断,不依赖 env。定位完 writerClient/worker 卡顿问题后改回:
+    //   return process.env.SISEARCH_WORKER_DIAG === '1';
+    return true;
 }
 
 export function resolveWriterLogPath(role: 'main' | 'worker'): string {
