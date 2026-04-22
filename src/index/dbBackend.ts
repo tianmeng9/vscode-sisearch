@@ -58,15 +58,36 @@ export interface WriteBatch {
     deletedRelativePaths: string[];
 }
 
+export interface DbBackendOptions {
+    /** Open in read-only mode. Skips DDL, pragmas (except a safe subset), and schema probing. File must exist. */
+    readonly?: boolean;
+}
+
 export class DbBackend {
     private db: Database.Database | null = null;
     private lineReader = new LineContentReader();
+    private readonly readonlyMode: boolean;
 
-    constructor(private readonly dbPath: string) {}
+    constructor(
+        private readonly dbPath: string,
+        options: DbBackendOptions = {}
+    ) {
+        this.readonlyMode = options.readonly === true;
+    }
 
     openOrInit(): void {
         if (this.db) { return; }
         const isMemory = this.dbPath === ':memory:';
+
+        if (this.readonlyMode) {
+            // Readonly: trust the file; fail fast if absent. No quick_check,
+            // no DDL, no meta write, no journal_mode (writes not allowed).
+            this.db = new Database(this.dbPath, { readonly: true, fileMustExist: true });
+            this.db.pragma('cache_size = -65536');
+            this.db.pragma('temp_store = MEMORY');
+            return;
+        }
+
         if (!isMemory && fs.existsSync(this.dbPath)) {
             // 已有文件先 quick_check,损坏就 quarantine
             try {

@@ -217,3 +217,67 @@ suite('DbBackend search', () => {
         }
     });
 });
+
+suite('DbBackend readonly mode', () => {
+    test('readonly opens existing DB and supports getStats', () => {
+        // Arrange: write something through a regular (writer) DbBackend first
+        const p = tmpDbPath();
+        {
+            const writer = new DbBackend(p);
+            writer.openOrInit();
+            writer.writeBatch({
+                metadata: [{ relativePath: 'a.c', mtime: 1, size: 1, symbolCount: 1 }],
+                symbols: [{ name: 'foo', kind: 'function', filePath: '/a.c', relativePath: 'a.c',
+                            lineNumber: 1, endLineNumber: 1, column: 0, lineContent: '' }],
+                deletedRelativePaths: [],
+            });
+            writer.close();
+        }
+        // Act: open readonly
+        const reader = new DbBackend(p, { readonly: true });
+        reader.openOrInit();
+        assert.deepStrictEqual(reader.getStats(), { files: 1, symbols: 1 });
+        assert.strictEqual(reader.getSchemaVersion(), 1);
+        reader.close();
+    });
+
+    test('readonly can search', () => {
+        const p = tmpDbPath();
+        {
+            const w = new DbBackend(p);
+            w.openOrInit();
+            w.writeBatch({
+                metadata: [{ relativePath: 'a.c', mtime: 1, size: 1, symbolCount: 1 }],
+                symbols: [{ name: 'hello', kind: 'function', filePath: '/a.c', relativePath: 'a.c',
+                            lineNumber: 5, endLineNumber: 5, column: 0, lineContent: '' }],
+                deletedRelativePaths: [],
+            });
+            w.close();
+        }
+        const r = new DbBackend(p, { readonly: true });
+        r.openOrInit();
+        const results = r.search('hello',
+            { caseSensitive: false, wholeWord: true, regex: false });
+        assert.strictEqual(results.length, 1);
+        assert.strictEqual(results[0].lineNumber, 5);
+        r.close();
+    });
+
+    test('readonly on missing file throws', () => {
+        const d = fs.mkdtempSync(path.join(os.tmpdir(), 'dbr-'));
+        const p = path.join(d, 'nonexistent.sqlite');
+        const r = new DbBackend(p, { readonly: true });
+        assert.throws(() => r.openOrInit(), /CANTOPEN|does not exist|ENOENT/i);
+    });
+
+    test('readonly writeBatch throws', () => {
+        const p = tmpDbPath();
+        // Seed first
+        { const w = new DbBackend(p); w.openOrInit(); w.close(); }
+        const r = new DbBackend(p, { readonly: true });
+        r.openOrInit();
+        assert.throws(() => r.writeBatch({ metadata: [], symbols: [], deletedRelativePaths: [] }),
+                      /readonly|read-only|attempt to write/i);
+        r.close();
+    });
+});
