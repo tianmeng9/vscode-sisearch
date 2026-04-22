@@ -33,7 +33,7 @@ This hybrid approach gives you the speed of a pre-built index with the coverage 
 ### Search Results Panel
 
 - **Virtual scrolling + pagination** &mdash; Results render through a virtual-scroll list and load incrementally (200 rows at a time by default) so 10k+ results stay responsive.
-- **Find in results** &mdash; Press `Ctrl+F` (`Cmd+F`) inside the results panel to open a filter widget that searches within the currently loaded results. Enter / Shift+Enter cycle through matches, `F3` / `Shift+F3` work too, Esc closes the widget.
+- **Find in results** &mdash; Press `Ctrl+F` (`Cmd+F`) inside the results panel to open a find widget styled like VS Code's native editor find. It searches within the currently loaded results and supports **Match Case** (`Alt+C`), **Match Whole Word** (`Alt+W`), and **Use Regular Expression** (`Alt+R`) toggles. Enter / Shift+Enter cycle through matches, `F3` / `Shift+F3` work too, Esc closes the widget.
 - **Syntax-highlighted preview** &mdash; Hover over any result's code portion to see a multi-line preview with full syntax highlighting (powered by [shiki](https://shiki.matsu.io/)), matching your current VS Code color theme.
 - **Jump to source** &mdash; Click the arrow icon on any result to open the file at the exact line.
 - **Result navigation** &mdash; Step through results one by one with `Ctrl+Shift+F4` / `Ctrl+Shift+F3`.

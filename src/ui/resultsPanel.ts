@@ -114,6 +114,7 @@ export class ResultsPanel {
     private getHtml(webview: vscode.Webview): string {
         const mediaPath = vscode.Uri.joinPath(this.extensionUri, 'media');
         const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaPath, 'results.css'));
+        const codiconCssUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaPath, 'codicon.css'));
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaPath, 'results.js'));
         const nonce = getNonce();
 
@@ -123,6 +124,7 @@ export class ResultsPanel {
         html = html.replace(/\{\{cspSource\}\}/g, webview.cspSource);
         html = html.replace(/\{\{nonce\}\}/g, nonce);
         html = html.replace(/\{\{cssUri\}\}/g, cssUri.toString());
+        html = html.replace(/\{\{codiconCssUri\}\}/g, codiconCssUri.toString());
         html = html.replace(/\{\{scriptUri\}\}/g, scriptUri.toString());
 
         return html;

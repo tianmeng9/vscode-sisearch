@@ -177,71 +177,121 @@ body {
     color: var(--vscode-menu-selectionForeground);
 }
 
-/* In-panel find widget (Ctrl+F) */
+/* ── In-panel find widget (Ctrl+F) ──────────────────────────────────
+ * Mimics VS Code's native editor find widget: rounded container,
+ * input with inline Aa / \b / .* toggles on the right, match counter,
+ * up/down/close controls. All surfaces use editorWidget theme tokens
+ * so the widget tracks whatever color theme the user has. */
 .find-widget {
     position: fixed;
-    top: 8px;
-    right: 24px;
+    top: 0;
+    right: 28px;
     display: flex;
     align-items: center;
-    gap: 2px;
-    padding: 4px 6px;
-    background: var(--vscode-editorWidget-background, #252526);
-    border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, #454545));
-    border-radius: 2px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    height: 32px;
+    padding: 0 4px;
+    background: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+    border-top: 0;
+    border-radius: 0 0 4px 4px;
+    box-shadow: var(--vscode-widget-shadow, 0 2px 8px rgba(0, 0, 0, 0.36)) 0 4px 8px;
     z-index: 300;
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
     color: var(--vscode-editorWidget-foreground, inherit);
+    font-family: var(--vscode-font-family);
+    font-size: 13px;
 }
 .find-widget[hidden] { display: none; }
 
+/* Input + inline action toggles, visually a single "search box" */
+.find-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: 24px;
+    padding-right: 4px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 2px;
+}
+.find-input-wrap:focus-within {
+    border-color: var(--vscode-focusBorder);
+}
+
 .find-widget input[type="text"] {
     width: 220px;
-    padding: 2px 6px;
-    background: var(--vscode-input-background);
+    height: 22px;
+    padding: 0 6px;
+    margin: 0;
+    background: transparent;
     color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border, transparent);
+    border: 0;
     outline: none;
     font-family: inherit;
     font-size: inherit;
 }
-.find-widget input[type="text"]:focus {
-    border-color: var(--vscode-focusBorder);
+.find-widget input[type="text"]::placeholder {
+    color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+}
+
+.find-input-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
 }
 
 .find-count {
-    min-width: 60px;
-    padding: 0 6px;
+    min-width: 80px;
+    padding: 0 8px;
     color: var(--vscode-descriptionForeground);
     white-space: nowrap;
     text-align: center;
 }
+.find-count.find-count-no-results {
+    color: var(--vscode-errorForeground, #f48771);
+}
 
-.find-btn {
+.find-controls {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-left: 4px;
+    margin-left: 2px;
+    border-left: 1px solid var(--vscode-editorWidget-border, transparent);
+}
+
+/* A single square clickable action — inline toggle or row button. */
+.find-action {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 22px;
-    height: 22px;
-    padding: 0 4px;
-    background: transparent;
-    color: inherit;
+    width: 20px;
+    height: 20px;
     border: 1px solid transparent;
-    border-radius: 2px;
+    border-radius: 3px;
     cursor: pointer;
-    font-family: inherit;
-    font-size: inherit;
+    color: var(--vscode-icon-foreground, inherit);
+    user-select: none;
 }
-.find-btn:hover {
-    background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+.find-action:hover {
+    background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
 }
-.find-btn.active,
-.find-toggle.active {
-    background: var(--vscode-inputOption-activeBackground, rgba(14, 99, 156, 0.3));
-    border-color: var(--vscode-inputOption-activeBorder, #007acc);
+.find-action:focus {
+    outline: none;
+    border-color: var(--vscode-focusBorder);
+}
+.find-action.active,
+.find-action[aria-checked="true"] {
+    background: var(--vscode-inputOption-activeBackground, rgba(14, 99, 156, 0.31));
+    border-color: var(--vscode-inputOption-activeBorder, transparent);
     color: var(--vscode-inputOption-activeForeground, inherit);
+}
+.find-action.disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+.find-action .codicon {
+    font-size: 16px;
+    line-height: 16px;
 }
 
 /* Highlight for the currently-focused find hit row */

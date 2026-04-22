@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}';">
+          content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+    <link rel="stylesheet" href="{{codiconCssUri}}">
     <link rel="stylesheet" href="{{cssUri}}">
 </head>
 <body>
@@ -11,12 +12,38 @@
     <div id="hoverPreview" class="hover-preview"></div>
     <div id="pagination-label" class="pagination-label"></div>
     <div id="find-widget" class="find-widget" hidden>
-        <input id="find-input" type="text" placeholder="Find in results" spellcheck="false" />
-        <span id="find-count" class="find-count">0/0</span>
-        <button id="find-prev" class="find-btn" title="Previous match (Shift+Enter)" type="button">&#x2191;</button>
-        <button id="find-next" class="find-btn" title="Next match (Enter)" type="button">&#x2193;</button>
-        <button id="find-case" class="find-btn find-toggle" title="Match case" type="button">Aa</button>
-        <button id="find-close" class="find-btn" title="Close (Esc)" type="button">&times;</button>
+        <div class="find-input-wrap">
+            <input id="find-input" type="text" placeholder="Find" spellcheck="false" autocomplete="off" />
+            <div class="find-input-actions">
+                <div id="find-case" class="find-action" role="checkbox" aria-checked="false"
+                     title="Match Case (Alt+C)" tabindex="0">
+                    <span class="codicon codicon-case-sensitive"></span>
+                </div>
+                <div id="find-word" class="find-action" role="checkbox" aria-checked="false"
+                     title="Match Whole Word (Alt+W)" tabindex="0">
+                    <span class="codicon codicon-whole-word"></span>
+                </div>
+                <div id="find-regex" class="find-action" role="checkbox" aria-checked="false"
+                     title="Use Regular Expression (Alt+R)" tabindex="0">
+                    <span class="codicon codicon-regex"></span>
+                </div>
+            </div>
+        </div>
+        <span id="find-count" class="find-count">No results</span>
+        <div class="find-controls">
+            <div id="find-prev" class="find-action" role="button"
+                 title="Previous Match (Shift+Enter)" tabindex="0">
+                <span class="codicon codicon-arrow-up"></span>
+            </div>
+            <div id="find-next" class="find-action" role="button"
+                 title="Next Match (Enter)" tabindex="0">
+                <span class="codicon codicon-arrow-down"></span>
+            </div>
+            <div id="find-close" class="find-action" role="button"
+                 title="Close (Escape)" tabindex="0">
+                <span class="codicon codicon-close"></span>
+            </div>
+        </div>
     </div>
     <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
 </body>

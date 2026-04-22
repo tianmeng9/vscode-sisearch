@@ -38,16 +38,25 @@
 
     // ── In-panel find (Ctrl+F) ────────────────────────────────────────
     // 查找作用于 allEntries(当前已加载的结果),不回后端、不跨页重算。
-    // 命中记录为 entry 在 allEntries 里的下标数组 find.hits;find.active 指向
+    // 命中记录为 entry 在 allEntries 里的下标数组 find.hits;find.activeHit 指向
     // 当前聚焦的那个下标。navigation 把 scrollRoot 滚动到 hitIndex*rowHeight,
-    // 虚拟滚动会把该行渲染出来,createRow 里按 dataset.index 决定加 find-hit /
-    // find-active 样式。
+    // 虚拟滚动会把该行渲染出来,createRow 里按 entry.globalIndex 决定加
+    // find-hit / find-active 样式。
+    //
+    // 三个 toggle 与 VS Code 原生 find widget 语义一致:
+    //   matchCase  — 区分大小写
+    //   wholeWord  — 只匹配完整单词(\b 边界)
+    //   regex      — 把 query 当 JavaScript 正则解释
     const find = {
         visible: false,
         query: '',
-        caseSensitive: false,
-        hits: [],        // indices into allEntries
-        activeHit: -1,   // index into find.hits
+        matchCase: false,
+        wholeWord: false,
+        regex: false,
+        hits: [],            // indices into allEntries
+        hitSet: new Set(),   // same, for O(1) row lookup in createRow
+        activeHit: -1,       // index into find.hits
+        regexInvalid: false, // true when user's regex pattern has a syntax error
     };
     const findWidget = document.getElementById('find-widget');
     const findInput = document.getElementById('find-input');
@@ -55,25 +64,58 @@
     const findPrevBtn = document.getElementById('find-prev');
     const findNextBtn = document.getElementById('find-next');
     const findCaseBtn = document.getElementById('find-case');
+    const findWordBtn = document.getElementById('find-word');
+    const findRegexBtn = document.getElementById('find-regex');
     const findCloseBtn = document.getElementById('find-close');
 
-    function matchEntry(entry, q, caseSensitive) {
-        if (!q) { return false; }
-        // 只在 lineContent + relativePath 上找(用户看得到的两列文本)。
+    function escapeRegex(s) {
+        return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    // Build a matcher function for the current find state. Returns null when
+    // the query is empty or (regex mode) unparseable; caller treats null as
+    // "no hits".
+    function buildFindMatcher() {
+        find.regexInvalid = false;
+        if (!find.query) { return null; }
+        let pattern;
+        if (find.regex) {
+            pattern = find.query;
+        } else {
+            pattern = escapeRegex(find.query);
+            if (find.wholeWord) { pattern = '\\b' + pattern + '\\b'; }
+        }
+        // In non-regex mode without wholeWord, a literal substring check is
+        // slightly cheaper than a RegExp. But the branch complexity isn't
+        // worth it — 200-row scans are trivial either way.
+        const flags = find.matchCase ? 'g' : 'gi';
+        try {
+            const re = new RegExp(pattern, flags);
+            return (hay) => { re.lastIndex = 0; return re.test(hay); };
+        } catch (e) {
+            find.regexInvalid = true;
+            return null;
+        }
+    }
+
+    function matchEntry(entry, matcher) {
+        // Search against lineContent + relativePath (the two columns the user
+        // actually sees in each row).
         const hay = (entry.lineContent || '') + '\n' + (entry.relativePath || '');
-        return caseSensitive ? hay.indexOf(q) >= 0 : hay.toLowerCase().indexOf(q.toLowerCase()) >= 0;
+        return matcher(hay);
     }
 
     function recomputeFindHits() {
         find.hits = [];
         find.hitSet = new Set();
-        if (!find.query) {
+        const matcher = buildFindMatcher();
+        if (!matcher) {
             find.activeHit = -1;
             updateFindCount();
             return;
         }
         for (let i = 0; i < allEntries.length; i++) {
-            if (matchEntry(allEntries[i], find.query, find.caseSensitive)) {
+            if (matchEntry(allEntries[i], matcher)) {
                 find.hits.push(i);
                 find.hitSet.add(i);
             }
@@ -84,12 +126,17 @@
 
     function updateFindCount() {
         if (!findCount) { return; }
-        if (!find.query) {
-            findCount.textContent = '';
+        findCount.classList.remove('find-count-no-results');
+        if (find.regexInvalid) {
+            findCount.textContent = 'Invalid regex';
+            findCount.classList.add('find-count-no-results');
+        } else if (!find.query) {
+            findCount.textContent = 'No results';
         } else if (find.hits.length === 0) {
             findCount.textContent = 'No results';
+            findCount.classList.add('find-count-no-results');
         } else {
-            findCount.textContent = (find.activeHit + 1) + ' / ' + find.hits.length;
+            findCount.textContent = (find.activeHit + 1) + ' of ' + find.hits.length;
         }
     }
 
@@ -101,8 +148,6 @@
         // Keep the hit near the middle so surrounding context is visible.
         const target = Math.max(0, rowTop - Math.floor(viewportH / 2) + VS.rowHeight);
         window.scrollTo({ top: target, behavior: 'auto' });
-        // rerenderContent will fire via the scroll handler, which re-applies
-        // find-hit/find-active classes since it consults find.hits directly.
         requestAnimationFrame(rerenderContent);
     }
 
@@ -111,6 +156,16 @@
         find.activeHit = (find.activeHit + delta + find.hits.length) % find.hits.length;
         updateFindCount();
         scrollToActiveHit();
+    }
+
+    function toggleFindOption(key, button) {
+        find[key] = !find[key];
+        if (button) {
+            button.setAttribute('aria-checked', find[key] ? 'true' : 'false');
+            button.classList.toggle('active', find[key]);
+        }
+        recomputeFindHits();
+        rerenderContent();
     }
 
     function showFindWidget() {
@@ -147,23 +202,39 @@
             if (e.key === 'Enter') {
                 e.preventDefault();
                 navigateHit(e.shiftKey ? -1 : 1);
-            } else if (e.key === 'Escape') {
+                return;
+            }
+            if (e.key === 'Escape') {
                 e.preventDefault();
                 hideFindWidget();
+                return;
+            }
+            // Alt+C / Alt+W / Alt+R — toggle shortcuts for the three options,
+            // matching VS Code's editor find widget.
+            if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                const k = e.key.toLowerCase();
+                if (k === 'c') { e.preventDefault(); toggleFindOption('matchCase', findCaseBtn); return; }
+                if (k === 'w') { e.preventDefault(); toggleFindOption('wholeWord', findWordBtn); return; }
+                if (k === 'r') { e.preventDefault(); toggleFindOption('regex', findRegexBtn); return; }
             }
         });
     }
     if (findPrevBtn) { findPrevBtn.addEventListener('click', () => navigateHit(-1)); }
     if (findNextBtn) { findNextBtn.addEventListener('click', () => navigateHit(1)); }
     if (findCloseBtn) { findCloseBtn.addEventListener('click', hideFindWidget); }
-    if (findCaseBtn) {
-        findCaseBtn.addEventListener('click', () => {
-            find.caseSensitive = !find.caseSensitive;
-            findCaseBtn.classList.toggle('active', find.caseSensitive);
-            recomputeFindHits();
-            rerenderContent();
+    if (findCaseBtn) { findCaseBtn.addEventListener('click', () => toggleFindOption('matchCase', findCaseBtn)); }
+    if (findWordBtn) { findWordBtn.addEventListener('click', () => toggleFindOption('wholeWord', findWordBtn)); }
+    if (findRegexBtn) { findRegexBtn.addEventListener('click', () => toggleFindOption('regex', findRegexBtn)); }
+    // Keyboard-activate toggles/buttons that are tabindex focusable (Space / Enter).
+    [findCaseBtn, findWordBtn, findRegexBtn, findPrevBtn, findNextBtn, findCloseBtn].forEach((btn) => {
+        if (!btn) { return; }
+        btn.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                btn.click();
+            }
         });
-    }
+    });
 
     function maybeLoadMore() {
         if (loadingMore) { return; }
