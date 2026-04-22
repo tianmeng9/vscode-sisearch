@@ -1,19 +1,35 @@
 {
   "name": "sisearch",
   "displayName": "SI Search",
-  "description": "Source Insight style search for VS Code",
-  "version": "1.0.0",
+  "description": "Source Insight style search for VS Code — SQLite FTS5 symbol index with ripgrep fallback",
+  "version": "1.0.1",
   "publisher": "tianmeng9",
+  "license": "MIT",
   "icon": "media/marketplace-icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
+    "Programming Languages",
     "Other"
+  ],
+  "keywords": [
+    "source-insight",
+    "symbol",
+    "c",
+    "cpp",
+    "search",
+    "find",
+    "fts5",
+    "navigation",
+    "code-search"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/tianmeng9/vscode-sisearch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tianmeng9/vscode-sisearch/issues"
   },
   "activationEvents": [
     "onView:siSearch.searchPanel",
