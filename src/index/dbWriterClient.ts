@@ -6,6 +6,7 @@
 
 import { Worker } from 'worker_threads';
 import type { WriteBatch } from './dbBackend';
+import { writerDiag } from './writerDiag';
 
 export interface WriterClientOptions {
     workerScriptPath: string;
@@ -51,12 +52,17 @@ export class DbWriterClient {
 
     constructor(options: WriterClientOptions) {
         const Ctor = options.WorkerCtor ?? (Worker as any);
+        writerDiag('main', 'client:spawn', { dbPath: options.dbPath, script: options.workerScriptPath });
         this.worker = new Ctor(options.workerScriptPath, {
             workerData: { dbPath: options.dbPath },
         });
         this.worker.on('message', (msg: any) => this.handleMessage(msg));
-        this.worker.on('error', (err: Error) => this.handleFatal(err));
+        this.worker.on('error', (err: Error) => {
+            writerDiag('main', 'client:workerError', { message: err.message, stack: err.stack });
+            this.handleFatal(err);
+        });
         this.worker.on('exit', (code: number) => {
+            writerDiag('main', 'client:workerExit', { code, disposed: this.disposed });
             if (code !== 0 && !this.disposed) {
                 this.handleFatal(new Error(`dbWriterWorker exited with code ${code}`));
             }
@@ -69,6 +75,11 @@ export class DbWriterClient {
         if (this.disposed) { throw new Error('DbWriterClient is disposed'); }
         const seq = this.nextSeq++;
         this.pendingBatches.add(seq);
+        writerDiag('main', 'client:postBatch', {
+            seq, symbols: batch.symbols.length, metadata: batch.metadata.length,
+            deletes: batch.deletedRelativePaths.length,
+            pendingBatchCount: this.pendingBatches.size,
+        });
         this.worker.postMessage({ type: 'batch', seq, batch });
     }
 
@@ -80,6 +91,11 @@ export class DbWriterClient {
         if (this.fatalError) { throw this.fatalError; }
         if (this.disposed) { return; }
         const seq = this.nextSeq++;
+        writerDiag('main', 'client:postDrain', {
+            seq, timeoutMs,
+            pendingBatches: this.pendingBatches.size,
+            pendingAcks: this.pendingAcks.length,
+        });
         return this.waitForAckWithTimeout(seq, timeoutMs, () => {
             this.worker.postMessage({ type: 'drain', seq });
         });
@@ -92,6 +108,11 @@ export class DbWriterClient {
         if (this.fatalError) { throw this.fatalError; }
         if (this.disposed) { return; }
         const seq = this.nextSeq++;
+        writerDiag('main', 'client:postCheckpoint', {
+            seq, timeoutMs,
+            pendingBatches: this.pendingBatches.size,
+            pendingAcks: this.pendingAcks.length,
+        });
         return this.waitForAckWithTimeout(seq, timeoutMs, () => {
             this.worker.postMessage({ type: 'checkpoint', seq });
         });
@@ -110,6 +131,11 @@ export class DbWriterClient {
                 // Evict the pending waiter so it doesn't leak
                 const idx = this.pendingAcks.findIndex(d => d.seq === seq);
                 if (idx >= 0) { this.pendingAcks.splice(idx, 1); }
+                writerDiag('main', 'client:timeout', {
+                    seq, timeoutMs,
+                    pendingBatches: this.pendingBatches.size,
+                    pendingAcks: this.pendingAcks.length,
+                });
                 // Resolve (not reject) — the sync itself succeeded; we just
                 // couldn't get a clean shutdown barrier. Data is still on disk
                 // thanks to SQLite transactions committing synchronously inside
@@ -129,18 +155,24 @@ export class DbWriterClient {
     /** drain + terminate. Idempotent. */
     async dispose(): Promise<void> {
         if (this.disposed) { return; }
+        writerDiag('main', 'client:disposeStart', {
+            pendingBatches: this.pendingBatches.size,
+            pendingAcks: this.pendingAcks.length,
+        });
         try {
             await this.drain();
         } catch {
             // ignore — we're tearing down anyway
         }
         this.disposed = true;
+        writerDiag('main', 'client:postClose', {});
         try {
             this.worker.postMessage({ type: 'close' });
         } catch { /* already dead */ }
         try {
             await this.worker.terminate();
         } catch { /* ignore */ }
+        writerDiag('main', 'client:disposeDone', {});
     }
 
     /** Per-batch errors that were recoverable (worker continued). */
@@ -150,8 +182,14 @@ export class DbWriterClient {
 
     private handleMessage(msg: any): void {
         if (msg?.type === 'batchDone' && typeof msg.seq === 'number') {
+            writerDiag('main', 'client:batchDoneReceived', {
+                seq: msg.seq, pendingBatchesBefore: this.pendingBatches.size,
+            });
             this.pendingBatches.delete(msg.seq);
         } else if (msg?.type === 'ack' && typeof msg.seq === 'number') {
+            writerDiag('main', 'client:ackReceived', {
+                seq: msg.seq, pendingAcksBefore: this.pendingAcks.length,
+            });
             // Unified ack for drain + checkpoint: resolve the matching waiter.
             const idx = this.pendingAcks.findIndex(d => d.seq === msg.seq);
             if (idx >= 0) {
@@ -161,6 +199,7 @@ export class DbWriterClient {
             }
         } else if (msg?.type === 'error') {
             const text = typeof msg.message === 'string' ? msg.message : String(msg.message);
+            writerDiag('main', 'client:errorReceived', { seq: msg.seq, message: text });
             this.errors.push(text);
             if (typeof msg.seq === 'number') {
                 // Treat a per-batch error as "batch done" so drain doesn't hang

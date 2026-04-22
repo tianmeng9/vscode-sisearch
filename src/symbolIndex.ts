@@ -16,6 +16,7 @@ import {
 import type { DbBackend, WriteBatch } from './index/dbBackend';
 import type { DbWriterClient as DbWriterClientType } from './index/dbWriterClient';
 import { LineContentReader } from './index/lineContentReader';
+import { writerDiag } from './index/writerDiag';
 
 // M7.1: 延迟加载 DbBackend，使得 better-sqlite3 原生绑定损坏时
 // SymbolIndex 模块仍能成功装载（仅在首次访问 DB 时才触发 require）。
@@ -257,39 +258,56 @@ export class SymbolIndex {
         const orchestrator = new SyncOrchestrator(deps);
 
         try {
+            writerDiag('main', 'client:postBatch', { phase: 'orchestrator.start' });
             await orchestrator.synchronize({
                 workspaceRoot,
                 cancellationToken: { get isCancellationRequested() { return token.isCancellationRequested; } },
             });
+            writerDiag('main', 'client:postBatch', { phase: 'orchestrator.done' });
         } finally {
             // 关键:即使 cancel 也必须 drain — 否则未落盘的 in-flight 批次可能残留。
             if (writerClient) {
+                writerDiag('main', 'client:postBatch', { phase: 'drain.begin' });
                 try {
                     await writerClient.drain();
-                } catch {
+                    writerDiag('main', 'client:postBatch', { phase: 'drain.done' });
+                } catch (e) {
+                    writerDiag('main', 'client:postBatch', {
+                        phase: 'drain.threw',
+                        message: e instanceof Error ? e.message : String(e),
+                    });
                     // drain 失败(worker fatal)时不抛出 —— 让 status 回退逻辑走下去。
                 }
                 // M10d: drain 之后再显式 TRUNCATE checkpoint,把 -wal 压到 0 字节。
                 // synchronous=OFF 下 WAL 只靠 auto-checkpoint 会长期膨胀;主动收尾一次
                 // 也把磁盘占用还给用户。checkpoint 失败同样不向上抛。
+                writerDiag('main', 'client:postBatch', { phase: 'checkpoint.begin' });
                 try {
                     await writerClient.checkpoint();
-                } catch {
+                    writerDiag('main', 'client:postBatch', { phase: 'checkpoint.done' });
+                } catch (e) {
+                    writerDiag('main', 'client:postBatch', {
+                        phase: 'checkpoint.threw',
+                        message: e instanceof Error ? e.message : String(e),
+                    });
                     // ignore —— checkpoint 失败不影响 sync 结果的可见性(WAL 仍可被读)。
                 }
             }
         }
 
+        writerDiag('main', 'client:postBatch', { phase: 'post-finally' });
         this.dirtyFiles.clear();
         this.deletedFiles.clear();
         if (token.isCancellationRequested) {
             const fallback = this.getStats().files > 0 ? 'stale' : 'none';
             this.setStatus(fallback);
             this.emitStats();
+            writerDiag('main', 'client:postBatch', { phase: 'cancelled.return', fallback });
             return;
         }
         this.setStatus('ready');
         this.emitStats();
+        writerDiag('main', 'client:postBatch', { phase: 'ready.return' });
     }
 
     async syncDirty(workspaceRoot: string): Promise<void> {
