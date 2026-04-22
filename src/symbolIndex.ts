@@ -20,6 +20,7 @@ import { classifyBatches } from './sync/batchClassifier';
 import type { WorkerPool, ParseBatchResult } from './sync/workerPool';
 import { SyncOrchestrator, type SyncDeps as SyncOrchestratorDeps } from './sync/syncOrchestrator';
 import { createReentrancyGuard } from './sync/reentrancyGuard';
+import { resetSearchDuringSyncState } from './search/searchDuringSyncState';
 
 export interface SymbolIndexDeps {
     /** 可选注入 WorkerPool；未提供时 façade 回退为同步解析（测试用）。 */
@@ -123,6 +124,11 @@ export class SymbolIndex {
         onProgress?: (p: SyncProgress) => void,
         includePaths?: string[],
     ): Promise<void> {
+        // M5.2: 每一轮 sync 开始时清掉搜索侧的 Sync-during-search 缓存选择,
+        // 保证用户每次 sync 期间搜索都会拿到一次新提示,而不是沿用上一轮的旧选择。
+        // 放在 syncGuard.run 之外故意:若同一个 guard 正在跑,reset 也不会扰动它,
+        // 因为 cached state 是搜索侧的短期去抖量(1s),不是 sync 的依赖。
+        resetSearchDuringSyncState();
         // 单并发闸门：若已有 sync 在跑（例如用户点了 Cancel 但上一轮 workerPool.parse
         // 还在 drain 队列），第二次调用会拿到同一个 promise，不再并行跑两条 pipeline。
         return this.syncGuard.run(() =>

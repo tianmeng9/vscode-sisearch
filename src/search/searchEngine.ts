@@ -5,6 +5,18 @@ import * as vscode from 'vscode';
 import { SearchOptions, SearchResult } from '../types';
 import { rgPath } from '@vscode/ripgrep';
 import { SymbolIndex } from '../symbolIndex';
+import {
+    decideSearchDuringSyncAction,
+    getCachedChoice,
+    getLastSyncPromptAt,
+    resetSearchDuringSyncState as _resetSearchDuringSyncState,
+    setCachedChoice,
+} from './searchDuringSyncState';
+
+/** Re-exported so SymbolIndex.synchronize can clear the decision cache at each sync start. */
+export const resetSearchDuringSyncState = _resetSearchDuringSyncState;
+/** Re-exported for host-only integration tests. */
+export { decideSearchDuringSyncAction as _decideSearchDuringSyncAction_forTest };
 
 export async function executeSearch(
     query: string,
@@ -160,6 +172,50 @@ export function parseRgLine(line: string, workspaceRoot: string): SearchResult |
     };
 }
 
+async function handleSearchDuringSync(
+    behavior: string,
+    query: string,
+    workspaceRoot: string,
+    options: SearchOptions,
+    includeExtensions: string[],
+    excludePatterns: string[],
+    signal?: AbortSignal,
+): Promise<SearchResult[]> {
+    const now = Date.now();
+    const decision = decideSearchDuringSyncAction(behavior, now, getLastSyncPromptAt(), getCachedChoice());
+
+    if (decision.action === 'cancel') {
+        setCachedChoice('cancel', now);
+        return [];
+    }
+    if (decision.action === 'grep') {
+        setCachedChoice('grep', now);
+        return executeSearch(query, workspaceRoot, options, includeExtensions, excludePatterns, signal);
+    }
+
+    // decision.action === 'prompt'
+    const grepBtn = '改用全文搜索';
+    const laterBtn = '稍后再试';
+    const cancelBtn = '取消';
+    let pick: string | undefined;
+    try {
+        pick = await vscode.window.showInformationMessage(
+            '索引正在 Sync 中,符号搜索暂不可用',
+            decision.promptExpect === 'grep-fallback' ? grepBtn : laterBtn,
+            cancelBtn,
+        );
+    } catch {
+        pick = undefined;
+    }
+    const after = Date.now();
+    if (pick === grepBtn) {
+        setCachedChoice('grep', after);
+        return executeSearch(query, workspaceRoot, options, includeExtensions, excludePatterns, signal);
+    }
+    setCachedChoice('cancel', after);
+    return [];
+}
+
 export async function executeSearchWithIndex(
     query: string,
     workspaceRoot: string,
@@ -173,6 +229,17 @@ export async function executeSearchWithIndex(
     const limit = vscode.workspace
         .getConfiguration('siSearch.search')
         .get<number>('maxResults', 200);
+
+    // M5.2: if sync is running, FTS5 table may be partial — branch on config.
+    if (index && index.isSyncInProgress()) {
+        const behavior = vscode.workspace
+            .getConfiguration('siSearch.search')
+            .get<string>('duringSyncBehavior', 'prompt-grep-fallback');
+        const results = await handleSearchDuringSync(
+            behavior, query, workspaceRoot, options, includeExtensions, excludePatterns, signal,
+        );
+        return { results, totalCount: results.length };
+    }
 
     if (index && (index.status === 'ready' || index.status === 'stale')) {
         const results = index.searchSymbols(query, workspaceRoot, options, { limit, offset });

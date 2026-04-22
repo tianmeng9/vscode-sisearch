@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { executeSearch, executeSearchWithIndex } from '../../src/search/searchEngine';
+import { executeSearch, executeSearchWithIndex, resetSearchDuringSyncState } from '../../src/search/searchEngine';
 import { SearchOptions } from '../../src/types';
 
 suite('SearchEngine', () => {
@@ -98,5 +98,45 @@ suite('SearchEngine', () => {
         const r = await executeSearchWithIndex('q', '/root', { caseSensitive: false, wholeWord: false, regex: false },
             ['.c'], [], fakeIndex, 0);
         assert.strictEqual(r.totalCount, 1234);
+    });
+});
+
+// M5.2: integration around executeSearchWithIndex + isSyncInProgress.
+// Host-only because the prompt branch hits vscode.window.showInformationMessage
+// and the config branch hits vscode.workspace.getConfiguration. In node (via
+// the vscode mock) showInformationMessage is stubbed to `undefined`, which
+// happens to map to 'cancel' — we assert that path below for completeness.
+suite('executeSearchWithIndex handleSearchDuringSync', () => {
+    function mkSyncingIndex() {
+        let symbolCalls = 0;
+        let countCalls = 0;
+        const idx = {
+            status: 'building' as const,
+            isSyncInProgress: () => true,
+            searchSymbols: () => { symbolCalls++; return []; },
+            countMatches: () => { countCalls++; return 0; },
+        } as any;
+        return { idx, peek: () => ({ symbolCalls, countCalls }) };
+    }
+
+    test('while syncing, never calls symbolIndex.searchSymbols / countMatches', async () => {
+        resetSearchDuringSyncState();
+        const { idx, peek } = mkSyncingIndex();
+        // With default config (prompt-grep-fallback) in the mock, the prompt returns
+        // undefined → cancelBtn path → [] results. Key invariant regardless of
+        // the branch taken: the FTS5 path was skipped.
+        await executeSearchWithIndex('q', '/root', { caseSensitive: false, wholeWord: false, regex: false },
+            ['.c'], [], idx, 0);
+        const c = peek();
+        assert.strictEqual(c.symbolCalls, 0, 'searchSymbols must not be called during sync');
+        assert.strictEqual(c.countCalls, 0, 'countMatches must not be called during sync');
+    });
+
+    test('while syncing, totalCount equals results.length (no FTS countMatches)', async () => {
+        resetSearchDuringSyncState();
+        const { idx } = mkSyncingIndex();
+        const r = await executeSearchWithIndex('q', '/root', { caseSensitive: false, wholeWord: false, regex: false },
+            ['.c'], [], idx, 0);
+        assert.strictEqual(r.totalCount, r.results.length);
     });
 });
