@@ -139,6 +139,17 @@ export function registerCommands(
                 return;
             }
 
+            // M7.1: native 加载失败时 SymbolIndex 构造为 indexEnabled:false;
+            // synchronize 会 no-op,为避免用户误以为"同步成功但什么也没发生",
+            // 在命令层提前给一条明确的错误提示并附上修复指引。
+            if (!symbolIndex.isIndexEnabled) {
+                vscode.window.showErrorMessage(
+                    'SI Search: cannot sync — native SQLite module failed to load. ' +
+                    'Run "SI Search: Rebuild Native (SQLite)" then reload the window.',
+                );
+                return;
+            }
+
             if (syncInProgress) {
                 vscode.window.showInformationMessage('SI Search: Sync already in progress');
                 return;

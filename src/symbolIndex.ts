@@ -13,8 +13,21 @@ import {
     SyncProgress,
     SymbolEntry,
 } from './types';
-import { DbBackend } from './index/dbBackend';
+import type { DbBackend } from './index/dbBackend';
 import { LineContentReader } from './index/lineContentReader';
+
+// M7.1: 延迟加载 DbBackend，使得 better-sqlite3 原生绑定损坏时
+// SymbolIndex 模块仍能成功装载（仅在首次访问 DB 时才触发 require）。
+// 若 composition 层已通过 checkSqliteAvailable() 判断 native 不可用并
+// 构造 SymbolIndex({ indexEnabled: false })，下面的 loader 永远不会被调用。
+let _DbBackendCtor: typeof import('./index/dbBackend').DbBackend | undefined;
+function loadDbBackend(): typeof import('./index/dbBackend').DbBackend {
+    if (_DbBackendCtor) { return _DbBackendCtor; }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('./index/dbBackend') as typeof import('./index/dbBackend');
+    _DbBackendCtor = mod.DbBackend;
+    return _DbBackendCtor;
+}
 import type { FileCandidate } from './sync/batchClassifier';
 import { classifyBatches } from './sync/batchClassifier';
 import type { WorkerPool, ParseBatchResult } from './sync/workerPool';
@@ -27,6 +40,13 @@ export interface SymbolIndexDeps {
     workerPool?: WorkerPool;
     /** 测试钩子:覆盖 DbBackend 文件路径(传 ':memory:' 可走内存 DB)。 */
     dbPath?: string;
+    /**
+     * M7.1: false 时索引功能被禁用——synchronize / searchSymbols / loadFromDisk
+     * 均短路为 no-op，status 恒为 'none'；getStats 返回零。
+     * 由 composition 层在 checkSqliteAvailable().available===false 时传入。
+     * 默认 true（未传即启用）。
+     */
+    indexEnabled?: boolean;
 }
 
 export class SymbolIndex {
@@ -43,6 +63,8 @@ export class SymbolIndex {
     private readonly lineReader = new LineContentReader();
     // 测试注入:覆盖 DbBackend 文件路径(如 ':memory:')。
     private readonly dbPathOverride: string | undefined;
+    // M7.1: 索引启用开关；false 时所有需要 DbBackend 的路径短路返回。
+    private readonly indexEnabled: boolean;
     // S8: canonicalizeRoot 结果缓存 —— 避免每次都走 realpathSync syscall
     private readonly canonicalByInput = new Map<string, string>();
     // P7.3: 状态机事件化，替代 composition 层 2s 轮询
@@ -52,7 +74,11 @@ export class SymbolIndex {
     constructor(deps: SymbolIndexDeps = {}) {
         this.workerPool = deps.workerPool;
         this.dbPathOverride = deps.dbPath;
+        this.indexEnabled = deps.indexEnabled !== false;  // 默认启用
     }
+
+    /** @internal 公开查询：索引功能是否启用。供 composition/commands 层决定是否提示/降级。 */
+    get isIndexEnabled(): boolean { return this.indexEnabled; }
 
     get status(): IndexStatus { return this._status; }
 
@@ -124,6 +150,8 @@ export class SymbolIndex {
         onProgress?: (p: SyncProgress) => void,
         includePaths?: string[],
     ): Promise<void> {
+        // M7.1: 索引禁用（native 加载失败）时，sync 直接 no-op。
+        if (!this.indexEnabled) { return; }
         // M5.2: 每一轮 sync 开始时清掉搜索侧的 Sync-during-search 缓存选择,
         // 保证用户每次 sync 期间搜索都会拿到一次新提示,而不是沿用上一轮的旧选择。
         // 放在 syncGuard.run 之外故意:若同一个 guard 正在跑,reset 也不会扰动它,
@@ -188,6 +216,12 @@ export class SymbolIndex {
     }
 
     async syncDirty(workspaceRoot: string): Promise<void> {
+        // M7.1: 索引禁用时 no-op；顺便清掉已积累的 dirty/deleted 集合避免内存无限涨。
+        if (!this.indexEnabled) {
+            this.dirtyFiles.clear();
+            this.deletedFiles.clear();
+            return;
+        }
         if (this.dirtyFiles.size === 0 && this.deletedFiles.size === 0) { return; }
 
         const db = this.getOrCreateDb(workspaceRoot);
@@ -221,6 +255,8 @@ export class SymbolIndex {
         options: SearchOptions,
         pagination?: { limit: number; offset: number },
     ): SearchResult[] {
+        // M7.1: 索引禁用时直接返回空；searchEngine 会退回 ripgrep 全文搜索。
+        if (!this.indexEnabled) { return []; }
         if (this._status !== 'ready' && this._status !== 'stale') { return []; }
         const db = this.getOrCreateDb(workspaceRoot);
         const canonical = this.canonicalizeRoot(workspaceRoot);
@@ -240,6 +276,8 @@ export class SymbolIndex {
     }
 
     countMatches(query: string, workspaceRoot: string, options: SearchOptions): number {
+        // M7.1: 索引禁用时返回 0。
+        if (!this.indexEnabled) { return 0; }
         if (this._status !== 'ready' && this._status !== 'stale') { return 0; }
         const db = this.getOrCreateDb(workspaceRoot);
         return db.countMatches(query, options);
@@ -250,6 +288,11 @@ export class SymbolIndex {
     }
 
     async loadFromDisk(workspaceRoot: string): Promise<boolean> {
+        // M7.1: 索引禁用时不尝试打开 DB，status 恒为 'none'。
+        if (!this.indexEnabled) {
+            this.setStatus('none');
+            return false;
+        }
         try {
             const db = this.getOrCreateDb(workspaceRoot);
             const stats = db.getStats();
@@ -320,7 +363,11 @@ export class SymbolIndex {
         let db = this.dbByRoot.get(canonical);
         if (!db) {
             const dbPath = this.dbPathOverride ?? path.join(canonical, '.sisearch', 'index.sqlite');
-            db = new DbBackend(dbPath);
+            // M7.1: 延迟加载 DbBackend 构造器,使 symbolIndex 模块在 better-sqlite3
+            // 绑定损坏时仍能装载成功(首次触达才失败,被 _doSynchronize/loadFromDisk
+            // 的上层 try/catch 捕获)。
+            const DbBackendCtor = loadDbBackend();
+            db = new DbBackendCtor(dbPath);
             db.openOrInit();
             this.dbByRoot.set(canonical, db);
         }

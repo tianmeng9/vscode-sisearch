@@ -8,6 +8,8 @@ import * as vscode from 'vscode';
 import { SymbolIndex } from './symbolIndex';
 import { cleanupLegacyShards } from './legacyCleanup';
 export { cleanupLegacyShards } from './legacyCleanup';
+import { checkSqliteAvailable } from './nativeAvailability';
+export { checkSqliteAvailable } from './nativeAvailability';
 import { SearchStore } from './search/searchStore';
 import { SidebarProvider } from './ui/sidebarProvider';
 import { FileWatcher } from './fileWatcher';
@@ -56,6 +58,43 @@ export function updateStatusBar(item: vscode.StatusBarItem, index: SymbolIndex):
             break;
         }
     }
+}
+
+/**
+ * M7.1: 运行 native 探测;若 better-sqlite3 不可用则向用户发警告,
+ * 并返回 available 标志供 activate() 决定是否启用索引。
+ * 放在此处以便:
+ *  - extension.ts 在构造 SymbolIndex 前拿到 available 值;
+ *  - 测试可单独调用 probeNativeAndNotify 而不必激活整个扩展。
+ */
+export function probeNativeAndNotify(vs: typeof vscode = vscode): { available: boolean; error?: string } {
+    const result = checkSqliteAvailable();
+    if (!result.available) {
+        void vs.window.showWarningMessage(
+            `SI Search: native SQLite module failed to load (${result.error ?? 'unknown error'}). ` +
+            `Symbol indexing is disabled; search will fall back to ripgrep. ` +
+            `Run "SI Search: Rebuild Native (SQLite)" from the command palette to retry.`
+        );
+    }
+    return result;
+}
+
+/**
+ * M7.1: 注册 siSearch.rebuildNative 命令。
+ * 打开一个 terminal,在扩展目录跑 npm rebuild better-sqlite3,提示重载窗口。
+ */
+export function registerRebuildNativeCommand(context: vscode.ExtensionContext): void {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('siSearch.rebuildNative', () => {
+            const term = vscode.window.createTerminal('SI Search Rebuild');
+            term.show();
+            // 用 extensionPath 作为 cwd;完成后提示用户 Reload Window。
+            term.sendText(
+                `cd "${context.extensionPath}" && npm rebuild better-sqlite3 && ` +
+                `echo "Done. Reload the window (Developer: Reload Window) to apply."`,
+            );
+        }),
+    );
 }
 
 /** 为 SymbolIndex 挂接 WorkerPool,并把 dispose 登记到 extension context。

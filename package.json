@@ -13,7 +13,8 @@
   ],
   "activationEvents": [
     "onView:siSearch.searchPanel",
-    "onCommand:siSearch.syncIndex"
+    "onCommand:siSearch.syncIndex",
+    "onCommand:siSearch.rebuildNative"
   ],
   "main": "./out/src/extension.js",
   "contributes": {
@@ -89,6 +90,11 @@
       {
         "command": "siSearch.clearIndex",
         "title": "SI Search: Clear Symbol Index"
+      },
+      {
+        "command": "siSearch.rebuildNative",
+        "title": "SI Search: Rebuild Native (SQLite)",
+        "category": "SI Search"
       }
     ],
     "menus": {
