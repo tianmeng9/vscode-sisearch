@@ -30,15 +30,31 @@
         }
     }
 
+    // Scroll container is actually <body> (see media/results.css: body
+    // has overflow-y:auto, #resultsList has no overflow). So 所有 scroll /
+    // scrollTop / scrollHeight readings must go through the scrolling root,
+    // not through #resultsList.
+    const scrollRoot = document.scrollingElement || document.documentElement;
+
     function maybeLoadMore() {
-        if (loadingMore) { return; }
-        if (totalCount <= 0 || loadedCount >= totalCount) { return; }
-        const el = resultsList;
-        // 视野底部对应的总行索引。如果它超过已加载数 - overscan,就该 load more。
-        // 这样做比"scrollTop 到底"更积极 —— 滚到未加载占位区之前就预取。
-        const viewportBottomRow = Math.ceil((el.scrollTop + el.clientHeight) / VS.rowHeight);
-        const prefetchMargin = VS.overscan * 2;  // 提前 ~16 行预取
-        if (viewportBottomRow + prefetchMargin >= loadedCount) {
+        if (loadingMore) {
+            console.log('[SI] maybeLoadMore skip: loadingMore=true');
+            return;
+        }
+        if (totalCount <= 0 || loadedCount >= totalCount) {
+            console.log('[SI] maybeLoadMore skip: at-end', { totalCount, loadedCount });
+            return;
+        }
+        const viewportBottom = scrollRoot.scrollTop + window.innerHeight;
+        const viewportBottomRow = Math.ceil(viewportBottom / VS.rowHeight);
+        const prefetchMargin = VS.overscan * 2;
+        const shouldLoad = viewportBottomRow + prefetchMargin >= loadedCount;
+        console.log('[SI] maybeLoadMore', {
+            scrollTop: scrollRoot.scrollTop, innerHeight: window.innerHeight,
+            scrollHeight: scrollRoot.scrollHeight,
+            viewportBottomRow, loadedCount, totalCount, shouldLoad,
+        });
+        if (shouldLoad) {
             loadingMore = true;
             vscode.postMessage({ command: 'loadMore' });
         }
@@ -55,6 +71,13 @@
         overscan: 8,
     };
 
+    // Scroll 发生在 body,不在 #resultsList — 监听 window/document 才对。
+    // 保留原 resultsList scroll 监听(实际永远不 fire)作为降级,但主要逻辑
+    // 通过 window scroll 驱动。
+    window.addEventListener('scroll', () => {
+        requestAnimationFrame(rerenderContent);
+        requestAnimationFrame(maybeLoadMore);
+    }, { passive: true });
     resultsList.addEventListener('scroll', () => {
         requestAnimationFrame(rerenderContent);
         // M4.4: piggyback on the same rAF-driven scroll handler so we don't
@@ -72,17 +95,16 @@
                 if (msg.highlightColors) { HIGHLIGHT_COLORS.push(...msg.highlightColors); }
                 if (msg.highlightBox !== undefined) { highlightBoxMode = msg.highlightBox; }
                 manualHighlights = [];
-                // M4.4: reset pagination. totalCount/loadedCount are optional on
-                // the wire — fall back to results.length so older/non-paginated
-                // senders keep working.
                 loadedCount = (msg.loadedCount !== undefined && msg.loadedCount !== null)
                     ? msg.loadedCount : msg.results.length;
                 totalCount = (msg.totalCount !== undefined && msg.totalCount !== null)
                     ? msg.totalCount : msg.results.length;
                 loadingMore = false;
-                // Reset scroll to top so maybeLoadMore doesn't fire immediately
-                // on a fresh small result set that happens to fit the viewport.
-                resultsList.scrollTop = 0;
+                // 真实的 scroll container 是 window/body,不是 #resultsList
+                window.scrollTo(0, 0);
+                console.log('[SI] showResults', {
+                    resultsLen: msg.results.length, loadedCount, totalCount,
+                });
                 updatePaginationLabel();
                 rerenderContent();
                 break;
@@ -97,6 +119,9 @@
                     totalCount = msg.totalCount;
                 }
                 loadingMore = false;
+                console.log('[SI] appendResults', {
+                    appendLen: msg.results.length, loadedCount, totalCount,
+                });
                 updatePaginationLabel();
                 rerenderContent();
                 break;
@@ -228,8 +253,9 @@
         // 时未加载段是 (totalCount - loadedCount) × rowHeight 的占位空白;
         // 滚动进该区间会触发 loadMore 追加真实行。
         const total = Math.max(totalCount, loaded);
-        const scrollTop = resultsList.scrollTop;
-        const viewportHeight = resultsList.clientHeight || 600;
+        // scroll 发生在 body,通过 window/documentElement 读
+        const scrollTop = scrollRoot.scrollTop;
+        const viewportHeight = window.innerHeight || 600;
         const visibleCount = Math.ceil(viewportHeight / VS.rowHeight);
 
         const start = Math.max(0, Math.floor(scrollTop / VS.rowHeight) - VS.overscan);
@@ -314,8 +340,8 @@
     function highlightNavEntry(index) {
         // With virtual scrolling, first scroll so the target row enters the viewport,
         // then rerender, then find and highlight the DOM element.
-        const targetScrollTop = Math.max(0, index * VS.rowHeight - resultsList.clientHeight / 2);
-        resultsList.scrollTop = targetScrollTop;
+        const targetScrollTop = Math.max(0, index * VS.rowHeight - window.innerHeight / 2);
+        window.scrollTo(0, targetScrollTop);
         rerenderContent();
 
         document.querySelectorAll('.result-line.nav-active').forEach(function (el) {

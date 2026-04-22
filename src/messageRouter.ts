@@ -105,8 +105,20 @@ export function wireMessageRouter(
                 highlightsTreeProvider.update([]);
                 break;
             }
+        }
+    });
+
+    // 结果面板消息路由
+    resultsPanel.onMessage(async (msg: ResultsPanelMessage) => {
+        switch (msg.command) {
             case 'loadMore': {
+                // loadMore 是从 resultsPanel webview 发出的 —— webview 里的
+                // `vscode.postMessage({command:'loadMore'})` 走的是 ResultsPanel
+                // 这条 channel,而不是 sidebar。历史上它被错放在了 sidebar 分支,
+                // 导致 webview 滚到底永远拿不到追加结果。
                 const active = store.getActive();
+                console.log('[SI] router received loadMore; active=', !!active,
+                    active ? { query: active.query, loaded: active.loadedCount, total: active.totalCount } : 'none');
                 if (!active) { break; }
                 const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
                 if (!workspaceRoot) { break; }
@@ -120,6 +132,7 @@ export function wireMessageRouter(
                     const { results: more } = await executeSearch(
                         active.query, workspaceRoot, active.options, extensions, excludes, symbolIndex, offset,
                     );
+                    console.log('[SI] loadMore got', more.length, 'more; offset was', offset);
                     store.appendToActive(more);
 
                     const newLoadedCount = offset + more.length;
@@ -128,18 +141,11 @@ export function wireMessageRouter(
                     resultsPanel.appendResults(newEntries, totalCount, newLoadedCount);
                     editorDecorations.updateResults(store.getActiveResults());
                 } catch (err: unknown) {
-                    // loadMore 失败:用户看来就是"滚到底没新数据",静默比 toast 好。
                     const em = err instanceof Error ? err.message : String(err);
                     console.error('[SI Search] loadMore failed:', em);
                 }
                 break;
             }
-        }
-    });
-
-    // 结果面板消息路由
-    resultsPanel.onMessage(async (msg: ResultsPanelMessage) => {
-        switch (msg.command) {
             case 'jumpToFile': {
                 const result: SearchResult = {
                     filePath: msg.filePath,

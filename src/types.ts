@@ -45,8 +45,7 @@ export type SidebarMessage =
     | { command: 'search'; query: string; options: SearchOptions; mode: SearchMode; filesToInclude?: string[]; filesToExclude?: string[] }
     | { command: 'selectHistory'; id: string }
     | { command: 'deleteHistory'; id: string }
-    | { command: 'clearAllHighlights' }
-    | { command: 'loadMore' };
+    | { command: 'clearAllHighlights' };
 
 /** Message types from extension to sidebar webview */
 export type SidebarUpdate =
@@ -67,7 +66,8 @@ export type ResultsPanelMessage =
     | { command: 'requestPreview'; filePath: string; lineNumber: number }
     | { command: 'highlightText'; text: string }
     | { command: 'clearAllHighlights' }
-    | { command: 'syncManualHighlights'; highlights: { text: string; color: string }[]; boxMode: boolean };
+    | { command: 'syncManualHighlights'; highlights: { text: string; color: string }[]; boxMode: boolean }
+    | { command: 'loadMore' };
 
 /** A single entry rendered in the results panel */
 export interface ResultsPanelEntry {
