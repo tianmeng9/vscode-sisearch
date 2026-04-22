@@ -6,6 +6,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { SymbolIndex } from './symbolIndex';
+import { cleanupLegacyShards } from './legacyCleanup';
+export { cleanupLegacyShards } from './legacyCleanup';
 import { SearchStore } from './search/searchStore';
 import { SidebarProvider } from './ui/sidebarProvider';
 import { FileWatcher } from './fileWatcher';
@@ -89,6 +91,12 @@ export function bindWorkspace(
 ): void {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceRoot) { return; }
+
+    // M6 / Decision 11:激活时静默清除遗留 msgpack 分片目录。
+    // 必须在 loadFromDisk 前执行,避免与新 SQLite 后端路径冲突。
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        cleanupLegacyShards(folder.uri.fsPath);
+    }
 
     // P7.3: 事件驱动,替代 2s setInterval 轮询。
     context.subscriptions.push(symbolIndex.onStatusChanged(() => refreshStatus()));
