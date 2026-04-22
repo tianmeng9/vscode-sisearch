@@ -294,27 +294,28 @@ export class DbBackend {
     private selectForQuery(
         query: string, options: SearchOptions, p: SearchPagination
     ): Array<{ name: string; relativePath: string; lineNumber: number; column: number }> {
-        // 精确 + case-sensitive → 直接 name=?
-        if (options.wholeWord && options.caseSensitive && !options.regex) {
+        // wholeWord(符号级完全匹配)—— 语义:name 完全等于 query。
+        // 不走 FTS5,因为 FTS5 的 unicode61 tokenizer 按非字母数字分词,C 标识符
+        // `amdgpu_device_init` 是单 token,`MATCH "amdgpu"` 命中不到子段,反而
+        // 让用户以为 wholeWord 失效(实际空结果后 fallback 到 ripgrep 文本搜索)。
+        // 直接用 name 列上的 B-tree 索引 + COLLATE NOCASE 处理大小写。
+        if (options.wholeWord && !options.regex) {
+            if (options.caseSensitive) {
+                return this.db!.prepare(
+                    `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
+                     FROM symbols s JOIN files f ON f.id = s.file_id
+                     WHERE s.name = ?
+                     ORDER BY f.relative_path, s.line_number
+                     LIMIT ? OFFSET ?`
+                ).all(query, p.limit, p.offset) as any;
+            }
             return this.db!.prepare(
                 `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
                  FROM symbols s JOIN files f ON f.id = s.file_id
-                 WHERE s.name = ?
+                 WHERE s.name = ? COLLATE NOCASE
                  ORDER BY f.relative_path, s.line_number
                  LIMIT ? OFFSET ?`
             ).all(query, p.limit, p.offset) as any;
-        }
-        // 精确 + case-insensitive → FTS5 MATCH(unicode61 自带 case fold)
-        if (options.wholeWord && !options.regex) {
-            const fts = escapeFtsLiteral(query);
-            return this.db!.prepare(
-                `SELECT s.name, f.relative_path AS relativePath, s.line_number AS lineNumber, s.column
-                 FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid
-                                  JOIN files f ON f.id = s.file_id
-                 WHERE symbols_fts MATCH ?
-                 ORDER BY f.relative_path, s.line_number
-                 LIMIT ? OFFSET ?`
-            ).all(fts, p.limit, p.offset) as any;
         }
         // regex → 提取 literal token 粗过滤 + RegExp 精过滤
         if (options.regex) {
@@ -370,13 +371,14 @@ export class DbBackend {
 
     private selectCountForQuery(query: string, options: SearchOptions): number {
         // 用 search() 的同构查询,但换 SELECT COUNT(*),不带 LIMIT/OFFSET
-        if (options.wholeWord && options.caseSensitive && !options.regex) {
-            const r = this.db!.prepare('SELECT COUNT(*) AS c FROM symbols WHERE name = ?').get(query) as { c: number };
-            return r.c;
-        }
         if (options.wholeWord && !options.regex) {
-            const r = this.db!.prepare('SELECT COUNT(*) AS c FROM symbols_fts WHERE symbols_fts MATCH ?')
-                             .get(escapeFtsLiteral(query)) as { c: number };
+            if (options.caseSensitive) {
+                const r = this.db!.prepare('SELECT COUNT(*) AS c FROM symbols WHERE name = ?')
+                                 .get(query) as { c: number };
+                return r.c;
+            }
+            const r = this.db!.prepare('SELECT COUNT(*) AS c FROM symbols WHERE name = ? COLLATE NOCASE')
+                             .get(query) as { c: number };
             return r.c;
         }
         if (options.regex) {
