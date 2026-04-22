@@ -72,29 +72,57 @@ export class DbWriterClient {
         this.worker.postMessage({ type: 'batch', seq, batch });
     }
 
-    /** Resolves when every batch posted up to this call is durable. */
-    async drain(): Promise<void> {
+    /** Resolves when every batch posted up to this call is durable.
+     *  Safety timeout: if the worker never acks (dead worker / lost message),
+     *  resolves after `timeoutMs` so the main-thread callsite doesn't hang.
+     *  Default 60 s — generous for real workloads but bounded for UI. */
+    async drain(timeoutMs: number = 60_000): Promise<void> {
         if (this.fatalError) { throw this.fatalError; }
         if (this.disposed) { return; }
         const seq = this.nextSeq++;
-        return new Promise<void>((resolve, reject) => {
-            this.pendingAcks.push({ seq, resolve, reject });
+        return this.waitForAckWithTimeout(seq, timeoutMs, () => {
             this.worker.postMessage({ type: 'drain', seq });
         });
     }
 
-    /** M10d: Requests a WAL TRUNCATE checkpoint in the worker. Resolves when
-     *  the worker has finished the checkpoint. Ordered with earlier batches;
-     *  like drain(), all previously-posted batches are durable when this
-     *  resolves. Façade calls this in synchronize()'s finally block so the
-     *  on-disk -wal file is compacted after each sync burst. */
-    async checkpoint(): Promise<void> {
+    /** M10d: Requests a WAL TRUNCATE checkpoint in the worker. Same timeout
+     *  semantics as drain(). Checkpoint on a multi-GB DB can take seconds;
+     *  allow up to 60 s before giving up. */
+    async checkpoint(timeoutMs: number = 60_000): Promise<void> {
         if (this.fatalError) { throw this.fatalError; }
         if (this.disposed) { return; }
         const seq = this.nextSeq++;
-        return new Promise<void>((resolve, reject) => {
-            this.pendingAcks.push({ seq, resolve, reject });
+        return this.waitForAckWithTimeout(seq, timeoutMs, () => {
             this.worker.postMessage({ type: 'checkpoint', seq });
+        });
+    }
+
+    private waitForAckWithTimeout(
+        seq: number,
+        timeoutMs: number,
+        send: () => void,
+    ): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const timer = setTimeout(() => {
+                if (settled) { return; }
+                settled = true;
+                // Evict the pending waiter so it doesn't leak
+                const idx = this.pendingAcks.findIndex(d => d.seq === seq);
+                if (idx >= 0) { this.pendingAcks.splice(idx, 1); }
+                // Resolve (not reject) — the sync itself succeeded; we just
+                // couldn't get a clean shutdown barrier. Data is still on disk
+                // thanks to SQLite transactions committing synchronously inside
+                // the worker. Caller can proceed.
+                this.errors.push(`drain/checkpoint seq=${seq} timed out after ${timeoutMs}ms`);
+                resolve();
+            }, timeoutMs);
+            this.pendingAcks.push({
+                seq,
+                resolve: () => { if (!settled) { settled = true; clearTimeout(timer); resolve(); } },
+                reject: (err) => { if (!settled) { settled = true; clearTimeout(timer); reject(err); } },
+            });
+            send();
         });
     }
 

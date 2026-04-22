@@ -164,4 +164,43 @@ suite('DbWriterClient', () => {
         await p1;
         await c.dispose();  // must not throw
     });
+
+    test('drain timeout resolves (not rejects) after timeoutMs with no ack', async () => {
+        const spy = makeSpy();
+        const c = new DbWriterClient({
+            workerScriptPath: '/fake', dbPath: ':memory:', WorkerCtor: spy.WorkerCtor,
+        });
+        // no ack emitted → must not hang
+        const p = c.drain(30);  // 30 ms
+        const start = Date.now();
+        await p;  // resolves, doesn't reject
+        const elapsed = Date.now() - start;
+        assert.ok(elapsed >= 25, `expected to wait ~30ms, got ${elapsed}ms`);
+        const errs = c.getErrors();
+        assert.ok(errs.some(e => /timed out/.test(e)), `errors should note timeout: ${errs}`);
+    });
+
+    test('checkpoint timeout resolves after timeoutMs with no ack', async () => {
+        const spy = makeSpy();
+        const c = new DbWriterClient({
+            workerScriptPath: '/fake', dbPath: ':memory:', WorkerCtor: spy.WorkerCtor,
+        });
+        const p = c.checkpoint(30);
+        await p;  // must resolve, not hang
+        const errs = c.getErrors();
+        assert.ok(errs.some(e => /timed out/.test(e)));
+    });
+
+    test('timeout cleans up pendingAck so a later ack does nothing', async () => {
+        const spy = makeSpy();
+        const c = new DbWriterClient({
+            workerScriptPath: '/fake', dbPath: ':memory:', WorkerCtor: spy.WorkerCtor,
+        });
+        await c.drain(20);  // timeout
+        const w = spy.instance();
+        // Late ack should be a no-op (no exception, no double-resolve)
+        assert.doesNotThrow(() => {
+            w.emit('message', { type: 'ack', seq: 1 });
+        });
+    });
 });
