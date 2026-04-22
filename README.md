@@ -2,7 +2,7 @@
 
 A Source Insight-style code search extension for VS Code, designed for C/C++ developers working on large-scale codebases.
 
-SI Search builds a **symbol index** using tree-sitter parsing, enabling instant symbol lookup across your entire workspace. When the index doesn't cover a query, it falls back to ripgrep full-text search seamlessly.
+SI Search builds a **symbol index** using tree-sitter parsing and stores it in an on-disk SQLite FTS5 database. This lets symbol lookup stay instant even on workspaces as large as the Linux kernel (70k+ files, tens of millions of symbols), without holding the index in the extension host's JS heap. When the index has no match for a query, SI Search falls back to ripgrep full-text search seamlessly.
 
 ## Features
 
@@ -19,19 +19,20 @@ SI Search uses [tree-sitter](https://tree-sitter.github.io/) (WASM) to parse all
 - **Namespaces** (C++) &mdash; `namespace std`
 - **Unions** &mdash; `union data`
 
-The index is persisted to disk (`.sisearch/index.json` in the workspace root) and automatically restored on VS Code restart&mdash;no re-scanning needed.
+The index is persisted to disk as a SQLite database at `.sisearch/index.sqlite` in the workspace root and reopened instantly on VS Code restart&mdash;no re-scanning needed.
 
 Press `Ctrl+Shift+S` or click the sync button in the Search panel title bar to build/update the index.
 
 ### Two-Tier Search Strategy
 
-1. **Index search** (instant) &mdash; When the symbol index is ready, queries are matched against the in-memory index with O(1) exact lookup or fast substring/regex scan.
-2. **Ripgrep fallback** &mdash; If the index has no results (e.g., searching for a string literal rather than a symbol name), SI Search automatically falls back to ripgrep full-text search.
+1. **Index search** (instant) &mdash; When the symbol index is ready, queries run against the SQLite FTS5 database. Exact name lookup (whole word) uses a B-tree index; substring search uses FTS5 MATCH + `LIKE`/`GLOB` for case-insensitive/case-sensitive filtering; regex extracts literal tokens for FTS5 pre-filtering and then runs `RegExp.test` in JS.
+2. **Ripgrep fallback** &mdash; If the index has no results (e.g., searching for a string literal rather than a symbol name), SI Search falls back to ripgrep full-text search.
 
-This hybrid approach gives you the speed of pre-built indexes with the coverage of full-text search.
+This hybrid approach gives you the speed of a pre-built index with the coverage of full-text search.
 
 ### Search Results Panel
 
+- **Virtual scrolling + pagination** &mdash; Results render through a virtual-scroll list and load incrementally (200 rows at a time by default) so 10k+ results stay responsive.
 - **Syntax-highlighted preview** &mdash; Hover over any result's code portion to see a multi-line preview with full syntax highlighting (powered by [shiki](https://shiki.matsu.io/)), matching your current VS Code color theme.
 - **Jump to source** &mdash; Click the arrow icon on any result to open the file at the exact line.
 - **Result navigation** &mdash; Step through results one by one with `Ctrl+Shift+F4` / `Ctrl+Shift+F3`.
@@ -58,30 +59,46 @@ Click the `⋯` button next to the regex toggle to reveal **files to include** a
 SI Search monitors your workspace for file changes:
 
 - **Modified/created files** are marked as dirty; the status bar shows "stale".
-- **Deleted files** are removed from the index.
+- **Deleted files** are removed from the index (rows delete from `files`; FTS5 entries drop via `ON DELETE CASCADE` + delete trigger).
 - Re-sync (`Ctrl+Shift+S`) only re-parses changed files, not the entire workspace.
+
+### Sync-Time Search Behavior
+
+Search requests that arrive while Sync is in progress can behave four different ways; configure with `siSearch.search.duringSyncBehavior` (see [Configuration](#configuration)).
 
 ## Architecture
 
 ```
-File System ── SymbolParser (web-tree-sitter WASM) ── SymbolIndex (Memory + Disk)
-                                                            |
-                                                       SearchEngine
-                                                      /           \
-                                              Index Search    Ripgrep Fallback
-
-File Watcher ── marks dirty/deleted files ── SymbolIndex
+                                     ┌─ Worker Pool (N × parseWorker, tree-sitter WASM)
+ File System ──▶ SyncOrchestrator ──▶│
+                                     └─ DbWriterClient ──▶ dbWriterWorker (owns write handle)
+                                                                    │
+                                                                    ▼
+                                                          .sisearch/index.sqlite
+                                                          (SQLite WAL + FTS5)
+                                                                    ▲
+                                           DbBackend (readonly handle)
+                                                                    │
+ User query ──▶ SearchEngine ──▶ SymbolIndex ──▶ DbBackend.search ──┘
+                      │
+                      └─ (no index hits) ──▶ ripgrep fallback
 ```
 
 **Key components:**
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| SymbolParser | `src/symbolParser.ts` | Tree-sitter WASM initialization, grammar loading, symbol extraction via S-expression queries |
-| SymbolIndex | `src/symbolIndex.ts` | Dual-map in-memory index (`symbolsByFile` + `nameIndex`), full/incremental sync, disk persistence |
-| FileWatcher | `src/fileWatcher.ts` | VS Code `FileSystemWatcher` wrapper, tracks dirty/deleted files |
-| SearchEngine | `src/searchEngine.ts` | Ripgrep wrapper + `executeSearchWithIndex()` hybrid dispatcher |
-| SyntaxHighlight | `src/syntaxHighlight.ts` | Shiki-based tokenization for hover preview, with VS Code theme integration |
+| SymbolParser | `src/symbolParser.ts` | Tree-sitter WASM init, grammar loading, S-expression symbol extraction. |
+| ParseWorker | `src/sync/parseWorker.ts` | `worker_threads` worker running the parser per batch of files. |
+| WorkerPool | `src/sync/workerPool.ts` | Pool (default `os.cpus().length`) dispatching parse jobs. |
+| SyncOrchestrator | `src/sync/syncOrchestrator.ts` | Classifier → parse → write pipeline; progress reporting. |
+| DbBackend | `src/index/dbBackend.ts` | SQLite FTS5 wrapper; schema bootstrap + readonly search/count; corrupt DB quarantine & auto-reinit. |
+| DbWriterWorker | `src/index/dbWriterWorker.ts` | Worker thread owning the write connection. Batches become `db.transaction()` calls. |
+| DbWriterClient | `src/index/dbWriterClient.ts` | Main-thread handle to the writer worker; back-pressure (`awaitBackpressure(hwm)`), drain/checkpoint with timeouts. |
+| SymbolIndex | `src/symbolIndex.ts` | Façade wiring DbBackend + writer worker + line-content LRU; public API (`searchSymbols` / `countMatches` / `synchronize` / `syncDirty` / `clear`). |
+| SearchEngine | `src/search/searchEngine.ts` | Ripgrep wrapper + `executeSearchWithIndex` hybrid dispatcher + sync-time UX. |
+| FileWatcher | `src/fileWatcher.ts` | VS Code `FileSystemWatcher` wrapper; tracks dirty/deleted files. |
+| SyntaxHighlight | `src/syntaxHighlight.ts` | Shiki-based tokenization for hover preview with VS Code theme integration. |
 
 ## Commands
 
@@ -109,10 +126,14 @@ All settings are under the `siSearch.*` namespace in VS Code settings.
 | `siSearch.includePaths` | `string[]` | `[]` | Subdirectories to include in symbol indexing (e.g. `["src/wifi", "src/drivers"]`). Empty means entire workspace. |
 | `siSearch.excludePatterns` | `string[]` | `["**/build/**", "**/.git/**", "**/node_modules/**"]` | Glob patterns to exclude from search. |
 | `siSearch.highlightColors` | `string[]` | `["cyan", "pink", "lightgreen", "magenta", "cornflowerblue", "orange", "green", "red"]` | Color palette for manual highlight marking. Colors cycle in order. |
-| `siSearch.highlightBox` | `boolean` | `true` | When `true`, highlights use a border-only box style; when `false`, highlights use solid background fill. |
+| `siSearch.highlightBox` | `boolean` | `true` | `true` = border-only box; `false` = solid background fill. |
 | `siSearch.navigationWrap` | `boolean` | `true` | Wrap around to the first/last result when navigating past the end/beginning. |
-| `siSearch.autoSyncOnSave` | `boolean` | `false` | Automatically re-sync dirty files when saving. |
-| `siSearch.parser.maxFileSizeBytes` | `number` | `1048576` (1 MB) | Files larger than this threshold are routed to a fast regex-based streaming extractor instead of the tree-sitter AST parser. See [Large File Handling](#large-file-handling) below. Set to `0` to disable (not recommended; see warning in the setting description). |
+| `siSearch.autoSync` | `boolean` | `true` | Automatically re-sync dirty files after a debounce window. |
+| `siSearch.autoSyncDelay` | `number` | `5000` | Debounce (ms) between the last file change and auto-sync kicking off. |
+| `siSearch.autoSyncOnSave` | `boolean` | `false` | Trigger sync immediately on file save (bypassing the debounce). |
+| `siSearch.parser.maxFileSizeBytes` | `number` | `1048576` (1 MB) | Files larger than this threshold are parsed through a regex-based streaming extractor instead of the tree-sitter AST parser (tree-sitter WASM has a 2 GB heap ceiling that large generated headers can blow past). The streamed symbols are fully indexed. Set to `0` to disable. |
+| `siSearch.search.duringSyncBehavior` | `string` | `"prompt-grep-fallback"` | What happens when a search runs while Sync is in progress. Enum: `prompt-grep-fallback` (ask; default action is ripgrep), `prompt-cancel` (ask; default is cancel), `grep-fallback` (silently use ripgrep), `cancel` (silently return no results). A 1-second dedup window suppresses repeated prompts. |
+| `siSearch.search.maxResults` | `number` | `200` | Page size for the initial search and each incremental load. Range `50–10000`. The results panel loads more rows automatically as you scroll. |
 
 ### Example `.vscode/settings.json`
 
@@ -125,7 +146,13 @@ All settings are under the `siSearch.*` namespace in VS Code settings.
     "siSearch.includeFileExtensions": [".c", ".h", ".cpp", ".hpp"],
 
     // Glob patterns excluded from all searches
-    "siSearch.excludePatterns": ["**/build/**", "**/.git/**", "**/node_modules/**"]
+    "siSearch.excludePatterns": ["**/build/**", "**/.git/**", "**/node_modules/**"],
+
+    // Keep the ripgrep fallback prompt; don't auto-trigger grep during sync
+    "siSearch.search.duringSyncBehavior": "prompt-cancel",
+
+    // Bigger pages for large workspaces
+    "siSearch.search.maxResults": 500
 }
 ```
 
@@ -133,9 +160,9 @@ All settings are under the `siSearch.*` namespace in VS Code settings.
 
 The search input supports three toggle options:
 
-- **Case Sensitive** (`Aa`) &mdash; Match exact letter casing.
-- **Whole Word** (`W`) &mdash; Match whole words only (maps to ripgrep `--word-regexp` or index exact name match).
-- **Regex** (`.*`) &mdash; Interpret the query as a regular expression.
+- **Case Sensitive** (`Aa`) &mdash; Match exact letter casing. Substring mode uses SQLite `GLOB` (ASCII-binary); whole-word mode uses plain `=` equality.
+- **Whole Word** (`W`) &mdash; Match the whole symbol name only. Uses B-tree equality against `symbols.name` rather than FTS5 (FTS5's `unicode61` tokenizer keeps underscore-joined C identifiers intact, which would make sub-token matches silently miss).
+- **Regex** (`.*`) &mdash; Interpret the query as a JavaScript regular expression. Literal tokens (length ≥ 2 alphanumeric runs) are extracted from the pattern and used as an FTS5 pre-filter, then `RegExp.test` runs on the candidate names.
 
 ## Sidebar Views
 
@@ -170,69 +197,91 @@ SI Search loads tree-sitter WASM grammars for C and C++ at runtime. For each sou
     declarator: (identifier) @name)) @def
 ```
 
-Each extracted symbol records: name, kind, file path, line number, column, and the line's text content.
+Each extracted symbol records: name, kind, file path, line number, column.
 
-### Large File Handling
+Large/generated C headers (above `siSearch.parser.maxFileSizeBytes`) bypass tree-sitter WASM and go through a regex-based streaming extractor instead. This path is memory-flat (line-by-line `readline`) and still feeds the SQLite index, so macros from multi-megabyte register headers are fully searchable.
 
-Tree-sitter runs inside a WebAssembly runtime with a hard 2 GB linear-memory ceiling. Machine-generated C/C++ headers (e.g., GPU register definitions, protocol schema headers) can be tens of megabytes and contain hundreds of thousands of `#define` directives. Parsing them through tree-sitter can exhaust the WASM heap and abort the extension host with `exit 134 / SIGABRT`.
+### SQLite FTS5 Index
 
-SI Search routes files by size:
+The index lives in `{workspaceRoot}/.sisearch/index.sqlite` as a SQLite database with:
 
-| File size | Path | What happens |
-|-----------|------|--------------|
-| `< maxFileSizeBytes` (default 1 MB) | **tree-sitter** | Full AST, all symbol kinds, `lineContent` preserved. |
-| `≥ maxFileSizeBytes` and `< 10 MB` | **streaming regex** | Line-by-line `readline` + regex extraction for `#define`, `struct`, `union`, `enum`, `class`, `namespace`, simple function definitions. `lineContent` is dropped to keep memory flat. |
-| `≥ 10 MB` | **streaming regex, `macrosOnly`** | Only `#define` is extracted. The seen-set for deduplication is also skipped. |
+- `meta` — schema version, created-at timestamp, workspace root, tokenizer name.
+- `files` — one row per indexed file (`relative_path` UNIQUE, `mtime_ms`, `size_bytes`, `symbol_count`). Indexed on `relative_path`.
+- `symbols` — one row per symbol (`name`, `kind` as enum int, `file_id`, `line_number`, `column`). Foreign key to `files` with `ON DELETE CASCADE`. Indexed on `file_id` and `name`.
+- `symbols_fts` — FTS5 virtual table using `unicode61 remove_diacritics 2` tokenizer. Stored as `content=''` (contentless FTS5 — only the inverted index, half the disk footprint).
+- Two triggers on `symbols` keep FTS5 in sync:
+  - `AFTER INSERT`: `INSERT INTO symbols_fts(rowid, name) VALUES (NEW.id, NEW.name)`
+  - `AFTER DELETE`: `INSERT INTO symbols_fts(symbols_fts, rowid, name) VALUES ('delete', OLD.id, OLD.name)` (contentless-FTS5 delete protocol).
 
-**Important:** Symbols extracted by the streaming path are **counted but not added to the search index**. They are recorded in file metadata (so incremental sync knows the file was processed) but do not appear in search results.
+Pragmas at open:
 
-Rationale: on a 33k-file Linux kernel `drivers/` tree, the ~30 register headers that trigger the streaming path contribute roughly 4.5 million machine-generated macro names. Adding them to the main-thread `InMemorySymbolIndex` pushes heap to 2–3 GB and crashes Node's V8 runtime. The default design trades searchability of these headers for stability. Users who need to find a specific register macro can use VS Code's built-in text search (`Ctrl+Shift+F`) or `grep` on the source file.
-
-**Overriding the default:**
-- Setting `siSearch.parser.maxFileSizeBytes` to a higher value routes fewer files to the streaming path, but re-exposes you to the WASM-heap crash for any file that actually exceeds tree-sitter's capacity.
-- Setting it to `0` disables the streaming path entirely — only use this if you know your workspace has no machine-generated headers.
-
-### Diagnostic Logging
-
-When reproducing a crash, set the environment variable `SISEARCH_WORKER_DIAG=1` before launching VS Code. The parse worker will write a JSON-Lines log to `$TMPDIR/sisearch-worker-<pid>.log` with one line per file entry/read/parse event. After a crash, `tail` the latest log:
-
-```bash
-ls -t /tmp/sisearch-worker-*.log | head -1 | xargs tail -20
+```
+journal_mode = WAL        crash-safe, readers don't block writers
+synchronous  = NORMAL     WAL-safe, ~3× faster than FULL
+cache_size   = -65536     64 MB SQLite page cache
+temp_store   = MEMORY     keep temp tables off disk
+foreign_keys = ON         enforce the CASCADE delete on files
 ```
 
-The diagnostic path is a no-op when the environment variable is unset, so production use is unaffected.
+The writer-worker additionally sets `synchronous=OFF` and a larger cache (`-262144`, 256 MB) for Sync throughput; readers keep NORMAL.
 
-### Index Structure
+### Concurrency: Writer Worker + Main-Thread Reader
 
-The in-memory index uses two maps for different access patterns:
+SQLite write locks are exclusive, so SI Search isolates writes in a dedicated `worker_threads` worker (`dbWriterWorker.ts`) that owns the only write connection. The main thread holds a **readonly** connection (`DbBackend` with `{readonly:true, fileMustExist:true}`) for search queries.
 
-- **`symbolsByFile`** (`Map<relativePath, SymbolEntry[]>`) &mdash; Enables O(1) per-file removal during incremental updates.
-- **`nameIndex`** (`Map<lowerCaseName, SymbolEntry[]>`) &mdash; Enables O(1) exact lookup and fast substring scanning.
+During Sync:
 
-### Disk Persistence
+1. `SyncOrchestrator` classifies files (new, dirty, deleted, unchanged).
+2. Parse jobs go through `WorkerPool`; each completed batch is a `ParseBatchResult` posted back to the main thread.
+3. `onBatchResult` forwards the batch to `DbWriterClient.postBatch`, which sends it to the worker.
+4. The worker runs one `db.transaction(() => { insertSymbol × N; upsertFile × M; deleteFileByPath × K })()` per batch.
+5. FTS5 triggers keep the inverted index consistent inside the same transaction.
 
-The index is serialized to `{workspaceRoot}/.sisearch/index.json` as a JSON file containing:
+Back-pressure: `DbWriterClient.awaitBackpressure(hwm=20)` polls the in-flight batch counter with a 20 ms sleep when pending > 20; this keeps the worker's message queue bounded so the terminating `drain`/`checkpoint` don't sit behind a flood of batches.
 
-```json
-{
-  "version": 1,
-  "createdAt": 1712700000000,
-  "workspaceRoot": "/path/to/workspace",
-  "files": [{ "relativePath": "...", "mtime": ..., "size": ..., "symbolCount": ... }],
-  "symbols": [{ "name": "...", "kind": "function", "filePath": "...", ... }]
-}
-```
+At Sync end the orchestrator awaits `drain()` then `checkpoint()` (both with a 60-second safety timeout, so a stalled worker can't lock the UI on "Saving Index").
 
-On VS Code startup, the index is loaded from disk. The `version` field ensures forward compatibility&mdash;if the format changes, old indexes are discarded and rebuilt.
+### Pagination & Virtual Scrolling
+
+`executeSearchWithIndex` returns `{results, totalCount}`:
+- `results` is `DbBackend.search(query, options, {limit, offset})` (paged, bounded to `maxResults` per page).
+- `totalCount` is `DbBackend.countMatches(query, options)` (a single `COUNT(*)` against the same WHERE).
+
+The webview receives a `showResults` for page 0 and posts `loadMore` as the user scrolls near the bottom. The extension replies with `appendResults` carrying the next page. Both messages include `loadedCount / totalCount` so the results panel's footer label stays consistent. When the user scrolls past the loaded region, a bottom spacer reserves the row height for not-yet-loaded rows so the scrollbar thumb reflects the true total.
 
 ### Incremental Sync
 
-During sync, SI Search compares each file's `mtime` and `size` against the stored metadata. Only files that are new, modified, or deleted are processed. This makes re-syncing a large codebase (e.g., Linux kernel) take seconds instead of minutes.
+During sync, SI Search compares each file's `mtime_ms` and `size_bytes` against `files`. Only new, modified, or deleted files are processed; deletions cascade to `symbols` (and, via the trigger, to `symbols_fts`). This makes re-syncing a large codebase (e.g., Linux kernel) take seconds rather than minutes.
+
+### Sync-Time Search UX
+
+When a search is dispatched while `SymbolIndex.isSyncInProgress()` returns true, `executeSearchWithIndex` branches on `siSearch.search.duringSyncBehavior`:
+- `cancel` — return no results silently.
+- `grep-fallback` — silently run ripgrep on the workspace.
+- `prompt-grep-fallback` / `prompt-cancel` — show a VS Code information message with "Use Grep" / "Cancel" buttons. A 1-second dedup window suppresses repeats.
+
+### Resilience
+
+- **Corrupt database** — at open, `DbBackend.openOrInit` runs `PRAGMA quick_check`. Failures move the file aside as `.sisearch/index.sqlite.corrupt-<ts>` and re-initialize a fresh schema.
+- **Schema version skew** — a newer on-disk schema than the extension expects throws `DbSchemaTooNewError` with a descriptive message. Older schemas are silently rebuilt.
+- **Missing native addon** — if `better-sqlite3` fails to load (e.g. no prebuild for this platform/arch), the extension still activates: `siSearch.nativeOk` context key becomes `false`, Sync/Clear commands hide, and all searches automatically route to ripgrep.
+- **Legacy `.sisearch/shards/`** — old msgpack shards from pre-SQLite builds are removed on activation.
+
+### Diagnostic Logging
+
+Set `SISEARCH_WORKER_DIAG=1` before launching VS Code to record a JSON-Lines trace of the writer worker's IPC channel (postBatch / ack / drain / checkpoint / timeout) plus every search query on the main thread. Logs go to `$TMPDIR/sisearch-writer-<pid>-main.log` and `-worker.log`. After a crash or hang:
+
+```bash
+ls -t /tmp/sisearch-writer-*.log | head -2 | xargs tail -40
+```
+
+The diagnostic path is a compile-time no-op when the environment variable is unset (cheap `process.env` read), so production use is unaffected.
 
 ## Requirements
 
 - VS Code 1.85.0 or later.
-- No external dependencies required. All tree-sitter WASM grammars and the ripgrep binary are bundled with the extension.
+- `better-sqlite3` native addon. Prebuilt binaries for Linux / macOS / Windows × x64 / arm64 are shipped in the VSIX; if your platform isn't covered, the extension falls back to ripgrep-only mode with a status-bar warning.
+- The ripgrep binary and all tree-sitter WASM grammars are bundled.
 
 ## Build from Source
 
@@ -240,11 +289,26 @@ During sync, SI Search compares each file's `mtime` and `size` against the store
 
 - [Node.js](https://nodejs.org/) 18+ and npm
 - [VS Code](https://code.visualstudio.com/) 1.85.0+
+- A C/C++ toolchain for `better-sqlite3` to compile against (node-gyp; Python 3.8+; a working `gcc`/`clang`/MSVC). Only needed when no prebuild matches your Node/Electron ABI.
 
 ### Install Dependencies
 
 ```bash
 npm install
+```
+
+### Rebuild Native Addon for VS Code (Electron) ABI
+
+VS Code runs extensions inside Electron, which has a different Node ABI than plain Node. Before `F5` debugging or packaging:
+
+```bash
+npm run rebuild-electron
+```
+
+To run node-only unit tests (see below), rebuild for plain Node instead:
+
+```bash
+npm rebuild better-sqlite3
 ```
 
 ### Compile
@@ -261,16 +325,26 @@ This runs `tsc -p ./` to compile TypeScript to `out/`.
 npm run watch
 ```
 
+### Run Tests
+
+Node-runnable unit tests:
+
+```bash
+npm run compile
+npx mocha --ui tdd out/test/suite/*.test.js
+```
+
+Host-only integration tests (launch a VS Code instance):
+
+```bash
+npm run test:host
+```
+
 ### Package as VSIX
 
 ```bash
 npx @vscode/vsce package
 ```
-
-This will:
-1. Copy WASM files from `node_modules` to `wasm/` (`npm run copy-wasm`)
-2. Compile TypeScript (`npm run compile`)
-3. Package everything into `sisearch-<version>.vsix`
 
 ### Install VSIX
 
@@ -285,7 +359,8 @@ Or in VS Code: `Ctrl+Shift+P` → `Extensions: Install from VSIX...`
 - Symbol indexing currently supports **C and C++ only**. Other languages fall back to ripgrep full-text search.
 - The hover preview renders code using the current VS Code theme via shiki. Some custom themes may not render perfectly.
 - The `.sisearch/` directory is created in the workspace root. Add it to your `.gitignore` if needed.
-- **Large machine-generated headers are not symbol-searchable.** Files above `siSearch.parser.maxFileSizeBytes` (default 1 MB) are processed through a regex-based streaming extractor whose output is recorded only in file metadata, not in the searchable index. This protects the extension host from running out of memory on workspaces like the Linux kernel `drivers/` tree where GPU register headers can contribute millions of machine-generated macros. Use VS Code's built-in text search for those files. See [Large File Handling](#large-file-handling) for the full trade-off rationale.
+- Multi-window concurrent Sync against the same workspace is not specifically handled; SQLite's `BUSY` timeout kicks in and one window will surface an error. Sync from one window at a time.
+- `regex` searches on patterns with no literal token (e.g., `.+`) fall back to scanning up to 10,000 symbol names and filtering in JS.
 
 ## License
 

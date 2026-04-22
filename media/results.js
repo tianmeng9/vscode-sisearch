@@ -37,23 +37,12 @@
     const scrollRoot = document.scrollingElement || document.documentElement;
 
     function maybeLoadMore() {
-        if (loadingMore) {
-            console.log('[SI] maybeLoadMore skip: loadingMore=true');
-            return;
-        }
-        if (totalCount <= 0 || loadedCount >= totalCount) {
-            console.log('[SI] maybeLoadMore skip: at-end', { totalCount, loadedCount });
-            return;
-        }
+        if (loadingMore) { return; }
+        if (totalCount <= 0 || loadedCount >= totalCount) { return; }
         const viewportBottom = scrollRoot.scrollTop + window.innerHeight;
         const viewportBottomRow = Math.ceil(viewportBottom / VS.rowHeight);
         const prefetchMargin = VS.overscan * 2;
         const shouldLoad = viewportBottomRow + prefetchMargin >= loadedCount;
-        console.log('[SI] maybeLoadMore', {
-            scrollTop: scrollRoot.scrollTop, innerHeight: window.innerHeight,
-            scrollHeight: scrollRoot.scrollHeight,
-            viewportBottomRow, loadedCount, totalCount, shouldLoad,
-        });
         if (shouldLoad) {
             loadingMore = true;
             vscode.postMessage({ command: 'loadMore' });
@@ -102,9 +91,6 @@
                 loadingMore = false;
                 // 真实的 scroll container 是 window/body,不是 #resultsList
                 window.scrollTo(0, 0);
-                console.log('[SI] showResults', {
-                    resultsLen: msg.results.length, loadedCount, totalCount,
-                });
                 updatePaginationLabel();
                 rerenderContent();
                 break;
@@ -119,9 +105,6 @@
                     totalCount = msg.totalCount;
                 }
                 loadingMore = false;
-                console.log('[SI] appendResults', {
-                    appendLen: msg.results.length, loadedCount, totalCount,
-                });
                 updatePaginationLabel();
                 rerenderContent();
                 break;

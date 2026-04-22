@@ -51,9 +51,7 @@ export type WriterDiagEvent =
     | 'query:error';
 
 function isEnabled(): boolean {
-    // 临时:强制开启诊断,不依赖 env。定位完 writerClient/worker 卡顿问题后改回:
-    //   return process.env.SISEARCH_WORKER_DIAG === '1';
-    return true;
+    return process.env.SISEARCH_WORKER_DIAG === '1';
 }
 
 export function resolveWriterLogPath(role: 'main' | 'worker'): string {
