@@ -83,6 +83,34 @@ export class DbWriterClient {
         this.worker.postMessage({ type: 'batch', seq, batch });
     }
 
+    /** Number of batches posted but not yet ack'd. Monotonically tracks the
+     *  worker message-queue length — callers use it to apply back-pressure. */
+    pendingBatchCount(): number {
+        return this.pendingBatches.size;
+    }
+
+    /** Wait until pendingBatchCount drops to <= highWaterMark. Intended for
+     *  upstream producers (syncOrchestrator.onBatchResult) to yield while the
+     *  worker catches up, instead of flooding its message queue.
+     *
+     *  Without this throttle, a fast parse pipeline can stack 100+ batches in
+     *  the worker's pending queue; drain/checkpoint then FIFO-wait behind
+     *  them, blowing past their timeout and leaving a backlog still being
+     *  written after synchronize() returns. 2026-04-22 log confirmed the
+     *  scenario. */
+    async awaitBackpressure(highWaterMark: number): Promise<void> {
+        if (this.pendingBatches.size <= highWaterMark) { return; }
+        if (this.fatalError) { throw this.fatalError; }
+        if (this.disposed) { return; }
+        // Poll the size; ack arrival is via handleMessage, no event plumbing
+        // yet. 20 ms poll is cheap vs. the ~500 ms/batch write time.
+        while (this.pendingBatches.size > highWaterMark) {
+            if (this.fatalError) { throw this.fatalError; }
+            if (this.disposed) { return; }
+            await new Promise(r => setTimeout(r, 20));
+        }
+    }
+
     /** Resolves when every batch posted up to this call is durable.
      *  Safety timeout: if the worker never acks (dead worker / lost message),
      *  resolves after `timeoutMs` so the main-thread callsite doesn't hang.

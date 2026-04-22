@@ -11,11 +11,15 @@ import type { WriteBatch } from '../index/dbBackend';
  * M10c: 抽象化 SyncOrchestrator 所需的 db 能力。实际实现可能是:
  *  - 直接的 DbBackend(测试走 :memory:)
  *  - 适配器:writeBatch 转发到 DbWriterClient(worker_thread),getAllFileMetadata 从 readonly handle 读
- *  writeBatch 必须是 fire-and-forget 语义(void),worker 侧自行串行落盘。
+ *
+ *  writeBatch 返回 void | Promise<void>:void = 立即完成(:memory: 直通),
+ *  Promise = adapter 需要 back-pressure(例如 writerClient 的 pending 队列满)。
+ *  orchestrator 会 await 返回值,从而天然节流。
+ *
  *  checkpoint 从 orchestrator 视角可以是 no-op —— façade 在 orchestrator 返回后 drain + checkpoint 收尾。
  */
 export interface SyncDb {
-    writeBatch(batch: WriteBatch): void;
+    writeBatch(batch: WriteBatch): void | Promise<void>;
     getAllFileMetadata(): Map<string, IndexedFile>;
     checkpoint(): void;
 }
@@ -74,7 +78,10 @@ export class SyncOrchestrator {
                 classified.toProcess.map(f => ({ absPath: f.absPath, relativePath: f.relativePath })),
                 async (batch: ParseBatchResult) => {
                     const deletes = pendingDeletes.splice(0);
-                    this.deps.db.writeBatch({
+                    // await 返回值:void 立即 resolve(测试路径),Promise 则阻塞
+                    // workerLoop 直到 writer back-pressure 松开。这是防止 writer
+                    // 队列被 fire-and-forget 淹没的关键节流点。
+                    await this.deps.db.writeBatch({
                         metadata: batch.metadata,
                         symbols: batch.symbols,
                         deletedRelativePaths: deletes,

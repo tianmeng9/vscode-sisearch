@@ -203,4 +203,60 @@ suite('DbWriterClient', () => {
             w.emit('message', { type: 'ack', seq: 1 });
         });
     });
+
+    test('awaitBackpressure returns immediately when under watermark', async () => {
+        const spy = makeSpy();
+        const c = new DbWriterClient({
+            workerScriptPath: '/fake', dbPath: ':memory:', WorkerCtor: spy.WorkerCtor,
+        });
+        c.postBatch({ metadata: [], symbols: [], deletedRelativePaths: [] });
+        // 1 pending, watermark 10 → no wait
+        const start = Date.now();
+        await c.awaitBackpressure(10);
+        assert.ok(Date.now() - start < 50, 'should not wait when under watermark');
+    });
+
+    test('awaitBackpressure waits until pending drops to <= watermark', async () => {
+        const spy = makeSpy();
+        const c = new DbWriterClient({
+            workerScriptPath: '/fake', dbPath: ':memory:', WorkerCtor: spy.WorkerCtor,
+        });
+        // Load 5 pending batches
+        for (let i = 0; i < 5; i++) {
+            c.postBatch({ metadata: [], symbols: [], deletedRelativePaths: [] });
+        }
+        assert.strictEqual(c.pendingBatchCount(), 5);
+
+        // Start a backpressure wait for watermark=2. Resolves once pending <= 2.
+        const waitP = c.awaitBackpressure(2);
+        let resolved = false;
+        waitP.then(() => { resolved = true; });
+
+        // At 5 pending, should still be waiting
+        await new Promise(r => setTimeout(r, 40));
+        assert.strictEqual(resolved, false);
+
+        const w = spy.instance();
+        // Ack 3 batches → pending drops to 2
+        w.emit('message', { type: 'batchDone', seq: 1 });
+        w.emit('message', { type: 'batchDone', seq: 2 });
+        w.emit('message', { type: 'batchDone', seq: 3 });
+
+        await waitP;  // must resolve now
+        assert.strictEqual(c.pendingBatchCount(), 2);
+    });
+
+    test('awaitBackpressure throws if worker fatal error occurs mid-wait', async () => {
+        const spy = makeSpy();
+        const c = new DbWriterClient({
+            workerScriptPath: '/fake', dbPath: ':memory:', WorkerCtor: spy.WorkerCtor,
+        });
+        for (let i = 0; i < 5; i++) {
+            c.postBatch({ metadata: [], symbols: [], deletedRelativePaths: [] });
+        }
+        const waitP = c.awaitBackpressure(0);
+        // Simulate a worker fatal error
+        setTimeout(() => spy.instance().emit('error', new Error('worker died')), 10);
+        await assert.rejects(waitP, /worker died/);
+    });
 });

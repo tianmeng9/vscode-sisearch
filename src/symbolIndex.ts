@@ -227,8 +227,16 @@ export class SymbolIndex {
             };
         } else {
             writerClient = this.getOrCreateWriterClient(workspaceRoot);
+            const WRITER_HIGH_WATERMARK = 20;
             dbAdapter = {
-                writeBatch: (b: WriteBatch) => { writerClient!.postBatch(b); },
+                writeBatch: async (b: WriteBatch) => {
+                    // Post 这一批,然后 await back-pressure:如果 writer 积压
+                    // 超过 WRITER_HIGH_WATERMARK,暂停 workerLoop 让 writer 追上。
+                    // 无背压:2026-04-22 log 证实 parse 往 writer 堆了 178 batch,
+                    // drain 进 60s timeout,sync 表面 return 但后台仍在写 61 批。
+                    writerClient!.postBatch(b);
+                    await writerClient!.awaitBackpressure(WRITER_HIGH_WATERMARK);
+                },
                 getAllFileMetadata: () => handles.readHandle.getAllFileMetadata(),
                 checkpoint: () => { /* no-op in orchestrator — drain+checkpoint done below */ },
             };
