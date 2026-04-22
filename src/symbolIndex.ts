@@ -13,7 +13,8 @@ import {
     SyncProgress,
     SymbolEntry,
 } from './types';
-import type { DbBackend } from './index/dbBackend';
+import type { DbBackend, WriteBatch } from './index/dbBackend';
+import type { DbWriterClient as DbWriterClientType } from './index/dbWriterClient';
 import { LineContentReader } from './index/lineContentReader';
 
 // M7.1: 延迟加载 DbBackend，使得 better-sqlite3 原生绑定损坏时
@@ -28,10 +29,20 @@ function loadDbBackend(): typeof import('./index/dbBackend').DbBackend {
     _DbBackendCtor = mod.DbBackend;
     return _DbBackendCtor;
 }
+// M10c: 同样延迟加载 DbWriterClient —— 它本身依赖 worker_threads 但 require 时不会打开 native;
+// 只有 getOrCreateWriterClient 路径会被真正触达。
+let _DbWriterClientCtor: typeof import('./index/dbWriterClient').DbWriterClient | undefined;
+function loadDbWriterClient(): typeof import('./index/dbWriterClient').DbWriterClient {
+    if (_DbWriterClientCtor) { return _DbWriterClientCtor; }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('./index/dbWriterClient') as typeof import('./index/dbWriterClient');
+    _DbWriterClientCtor = mod.DbWriterClient;
+    return _DbWriterClientCtor;
+}
 import type { FileCandidate } from './sync/batchClassifier';
 import { classifyBatches } from './sync/batchClassifier';
 import type { WorkerPool, ParseBatchResult } from './sync/workerPool';
-import { SyncOrchestrator, type SyncDeps as SyncOrchestratorDeps } from './sync/syncOrchestrator';
+import { SyncOrchestrator, type SyncDeps as SyncOrchestratorDeps, type SyncDb } from './sync/syncOrchestrator';
 import { createReentrancyGuard } from './sync/reentrancyGuard';
 import { resetSearchDuringSyncState } from './search/searchDuringSyncState';
 
@@ -47,6 +58,23 @@ export interface SymbolIndexDeps {
      * 默认 true（未传即启用）。
      */
     indexEnabled?: boolean;
+    /**
+     * M10c: 扩展根路径,用于定位 out/src/index/dbWriterWorker.js。
+     * 非测试场景下由 activate(context) 传入 context.extensionPath。
+     * 未提供时,writer worker 无法 spawn —— synchronize 会走同步 fallback(内存/测试路径)。
+     */
+    extensionPath?: string;
+}
+
+interface PerWorkspaceHandles {
+    /** 主线程只读 handle(WAL 自动可见 writer 的 commit)。 */
+    readHandle: DbBackend;
+    /** worker_thread 写入端;按需 spawn,synchronize 期间常驻,dispose 时 terminate。 */
+    writerClient: DbWriterClientType | null;
+    /** 用于 spawn writerClient 的磁盘路径;:memory: 表示 inMemory。 */
+    writerDbPath: string;
+    /** 内存 DB(测试) —— 不走 writer worker,所有写直通单 handle。 */
+    inMemory: boolean;
 }
 
 export class SymbolIndex {
@@ -57,14 +85,16 @@ export class SymbolIndex {
     // 单并发 synchronize 闸门：cancel-then-resync 会并行两条 pipeline 共享 workerPool,
     // 33k 文件级别直接把 VS Code 打崩。详见 src/sync/reentrancyGuard.ts。
     private readonly syncGuard = createReentrancyGuard();
-    // DbBackend 按 canonical workspaceRoot 记忆化。
-    private readonly dbByRoot = new Map<string, DbBackend>();
+    // M10c: 每 workspace 一组 handles(readonly + writerClient)
+    private readonly handlesByRoot = new Map<string, PerWorkspaceHandles>();
     // 搜索命中后按需读取行内容的 LRU cache。
     private readonly lineReader = new LineContentReader();
     // 测试注入:覆盖 DbBackend 文件路径(如 ':memory:')。
     private readonly dbPathOverride: string | undefined;
     // M7.1: 索引启用开关；false 时所有需要 DbBackend 的路径短路返回。
     private readonly indexEnabled: boolean;
+    // M10c: 扩展根路径,用于构造 writer worker 的脚本绝对路径。
+    private readonly extensionPath: string | undefined;
     // S8: canonicalizeRoot 结果缓存 —— 避免每次都走 realpathSync syscall
     private readonly canonicalByInput = new Map<string, string>();
     // P7.3: 状态机事件化，替代 composition 层 2s 轮询
@@ -75,6 +105,7 @@ export class SymbolIndex {
         this.workerPool = deps.workerPool;
         this.dbPathOverride = deps.dbPath;
         this.indexEnabled = deps.indexEnabled !== false;  // 默认启用
+        this.extensionPath = deps.extensionPath;
     }
 
     /** @internal 公开查询：索引功能是否启用。供 composition/commands 层决定是否提示/降级。 */
@@ -90,10 +121,16 @@ export class SymbolIndex {
 
     /** 释放 EventEmitter;由 composition 层在 ExtensionContext.subscriptions 中登记。 */
     dispose(): void {
-        for (const db of this.dbByRoot.values()) {
-            try { db.close(); } catch { /* ignore */ }
+        for (const h of this.handlesByRoot.values()) {
+            // writer 先 terminate(drain + close worker thread),再关 readHandle
+            if (h.writerClient) {
+                // fire-and-forget — dispose() is sync per VS Code contract;
+                // Node will wait on the promise via process exit in practice.
+                void h.writerClient.dispose();
+            }
+            try { h.readHandle.close(); } catch { /* ignore */ }
         }
-        this.dbByRoot.clear();
+        this.handlesByRoot.clear();
         this._onStatusChanged.dispose();
         this._onStatsChanged.dispose();
     }
@@ -101,8 +138,8 @@ export class SymbolIndex {
     /** @internal 测试钩子——不得用于生产代码路径。走 setStatus 以保持事件对称。 */
     _setStatusForTest(next: IndexStatus): void { this.setStatus(next); }
 
-    /** @internal 测试钩子:暴露 dbByRoot 大小,用于验证路径标准化。 */
-    _getStorageCountForTest(): number { return this.dbByRoot.size; }
+    /** @internal 测试钩子:暴露 handlesByRoot 大小,用于验证路径标准化。 */
+    _getStorageCountForTest(): number { return this.handlesByRoot.size; }
 
     /** 公开查询:sync 是否正在进行。供搜索路径决定是否走 fallback。 */
     isSyncInProgress(): boolean { return this.syncGuard.isRunning(); }
@@ -120,8 +157,8 @@ export class SymbolIndex {
     }
 
     getStats(): { files: number; symbols: number } {
-        for (const db of this.dbByRoot.values()) {
-            try { return db.getStats(); } catch { /* fall through */ }
+        for (const h of this.handlesByRoot.values()) {
+            try { return h.readHandle.getStats(); } catch { /* fall through */ }
         }
         return { files: 0, symbols: 0 };
     }
@@ -174,7 +211,28 @@ export class SymbolIndex {
     ): Promise<void> {
         this.setStatus('building');
 
-        const db = this.getOrCreateDb(workspaceRoot);
+        const handles = this.getOrCreateHandles(workspaceRoot);
+        // M10c: 构造 SyncDb 适配器 —— writeBatch 路由到 writerClient(worker_thread)
+        // 或 (内存/测试) 直通 readHandle;getAllFileMetadata 从 readHandle(readonly) 读;
+        // checkpoint 在 orchestrator 视角是 no-op,façade 在本函数末尾 drain+checkpoint。
+        let dbAdapter: SyncDb;
+        let writerClient: DbWriterClientType | null = null;
+        if (handles.inMemory) {
+            // 测试/内存路径:一个 handle 即读即写,writeBatch 直通。
+            dbAdapter = {
+                writeBatch: (b: WriteBatch) => handles.readHandle.writeBatch(b),
+                getAllFileMetadata: () => handles.readHandle.getAllFileMetadata(),
+                checkpoint: () => { /* façade 收尾 */ },
+            };
+        } else {
+            writerClient = this.getOrCreateWriterClient(workspaceRoot);
+            dbAdapter = {
+                writeBatch: (b: WriteBatch) => { writerClient!.postBatch(b); },
+                getAllFileMetadata: () => handles.readHandle.getAllFileMetadata(),
+                checkpoint: () => { /* no-op in orchestrator — drain+checkpoint done below */ },
+            };
+        }
+
         const deps: SyncOrchestratorDeps = {
             scanFiles: async (root: string) => this.scanWorkspace(root, extensions, excludePatterns, includePaths, token),
             classify: async (input) => classifyBatches(input),
@@ -191,17 +249,31 @@ export class SymbolIndex {
                     }
                 },
             },
-            db,
+            db: dbAdapter,
             onProgress: (phase: string, current: number, total: number, currentFile?: string) => {
                 onProgress?.({ phase: phase as SyncProgress['phase'], current, total, currentFile });
             },
         };
         const orchestrator = new SyncOrchestrator(deps);
 
-        await orchestrator.synchronize({
-            workspaceRoot,
-            cancellationToken: { get isCancellationRequested() { return token.isCancellationRequested; } },
-        });
+        try {
+            await orchestrator.synchronize({
+                workspaceRoot,
+                cancellationToken: { get isCancellationRequested() { return token.isCancellationRequested; } },
+            });
+        } finally {
+            // 关键:即使 cancel 也必须 drain — 否则未落盘的 in-flight 批次可能残留。
+            if (writerClient) {
+                try {
+                    await writerClient.drain();
+                } catch {
+                    // drain 失败(worker fatal)时不抛出 —— 让 status 回退逻辑走下去。
+                }
+            }
+            // 注:writer worker 的 SQLite 连接自己(WAL 模式)会周期 auto-checkpoint。
+            // 我们不在 readonly 主线程 handle 上调 checkpoint —— pragma 会 fail。
+            // 若需 TRUNCATE 级 checkpoint,应在 writer 侧发一个 close+open 或显式消息(M10d)。
+        }
 
         this.dirtyFiles.clear();
         this.deletedFiles.clear();
@@ -224,7 +296,7 @@ export class SymbolIndex {
         }
         if (this.dirtyFiles.size === 0 && this.deletedFiles.size === 0) { return; }
 
-        const db = this.getOrCreateDb(workspaceRoot);
+        const handles = this.getOrCreateHandles(workspaceRoot);
         const deletedPaths = [...this.deletedFiles];
         this.deletedFiles.clear();
 
@@ -238,12 +310,19 @@ export class SymbolIndex {
         }
         this.dirtyFiles.clear();
 
-        db.writeBatch({
+        const batch: WriteBatch = {
             metadata: parseResult?.metadata ?? [],
             symbols: parseResult?.symbols ?? [],
             deletedRelativePaths: deletedPaths,
-        });
-        db.checkpoint();
+        };
+        if (handles.inMemory) {
+            handles.readHandle.writeBatch(batch);
+        } else {
+            const writer = this.getOrCreateWriterClient(workspaceRoot);
+            writer.postBatch(batch);
+            // syncDirty 是 small-batch 路径,等 drain 保证后续读可见。
+            await writer.drain();
+        }
 
         if (this._status === 'stale') { this.setStatus('ready'); }
         this.emitStats();
@@ -258,9 +337,9 @@ export class SymbolIndex {
         // M7.1: 索引禁用时直接返回空；searchEngine 会退回 ripgrep 全文搜索。
         if (!this.indexEnabled) { return []; }
         if (this._status !== 'ready' && this._status !== 'stale') { return []; }
-        const db = this.getOrCreateDb(workspaceRoot);
+        const handles = this.getOrCreateHandles(workspaceRoot);
         const canonical = this.canonicalizeRoot(workspaceRoot);
-        const rawResults = db.search(query, options, pagination);
+        const rawResults = handles.readHandle.search(query, options, pagination);
         return rawResults.map(r => {
             const abs = path.join(canonical, r.relativePath);
             const line = this.lineReader.read(abs, r.lineNumber);
@@ -279,8 +358,8 @@ export class SymbolIndex {
         // M7.1: 索引禁用时返回 0。
         if (!this.indexEnabled) { return 0; }
         if (this._status !== 'ready' && this._status !== 'stale') { return 0; }
-        const db = this.getOrCreateDb(workspaceRoot);
-        return db.countMatches(query, options);
+        const handles = this.getOrCreateHandles(workspaceRoot);
+        return handles.readHandle.countMatches(query, options);
     }
 
     async saveToDisk(_workspaceRoot: string): Promise<void> {
@@ -294,8 +373,8 @@ export class SymbolIndex {
             return false;
         }
         try {
-            const db = this.getOrCreateDb(workspaceRoot);
-            const stats = db.getStats();
+            const handles = this.getOrCreateHandles(workspaceRoot);
+            const stats = handles.readHandle.getStats();
             if (stats.files > 0) {
                 this.setStatus('ready');
                 this.emitStats();
@@ -310,8 +389,13 @@ export class SymbolIndex {
     }
 
     clear(): void {
-        for (const db of this.dbByRoot.values()) {
-            try { db.clearAll(); } catch { /* ignore */ }
+        for (const h of this.handlesByRoot.values()) {
+            // clearAll 需要 write 权限 —— readonly handle 不支持,inMemory 走单 handle。
+            if (h.inMemory) {
+                try { h.readHandle.clearAll(); } catch { /* ignore */ }
+            }
+            // 生产路径下 clear() 仅把 status 重置;真正清盘走 clearDisk()。
+            // 这是保持 P7.3 原有语义(测试中 :memory: 可见清空,生产 :file 只重置 status)。
         }
         this.dirtyFiles.clear();
         this.deletedFiles.clear();
@@ -321,10 +405,15 @@ export class SymbolIndex {
 
     clearDisk(workspaceRoot: string): void {
         const canonical = this.canonicalizeRoot(workspaceRoot);
-        const existing = this.dbByRoot.get(canonical);
+        const existing = this.handlesByRoot.get(canonical);
         if (existing) {
-            try { existing.close(); } catch { /* ignore */ }
-            this.dbByRoot.delete(canonical);
+            // 关闭顺序:先 writer(Windows 上文件句柄要先 release),再 readHandle
+            if (existing.writerClient) {
+                // fire-and-forget dispose; worker 挂在自己的 event loop 里,UI 不能阻塞。
+                void existing.writerClient.dispose();
+            }
+            try { existing.readHandle.close(); } catch { /* ignore */ }
+            this.handlesByRoot.delete(canonical);
         }
         const p = path.join(canonical, '.sisearch', 'index.sqlite');
         for (const suffix of ['', '-wal', '-shm']) {
@@ -356,22 +445,76 @@ export class SymbolIndex {
         return canonical;
     }
 
-    /** 按 canonical workspaceRoot 记忆化 DbBackend;首次访问时 openOrInit。
-     *  测试场景下 dbPathOverride(例如 ':memory:') 覆盖默认的 .sisearch/index.sqlite。 */
-    private getOrCreateDb(workspaceRoot: string): DbBackend {
+    /** M10c: 按 canonical workspaceRoot 记忆化每-workspace handle 组。
+     *  生产路径:file DB → 先 bootstrap 创 schema,再开 readonly readHandle;writerClient lazy。
+     *  测试路径:':memory:' → readHandle 即读即写,不 spawn writerClient(inMemory=true)。 */
+    private getOrCreateHandles(workspaceRoot: string): PerWorkspaceHandles {
         const canonical = this.canonicalizeRoot(workspaceRoot);
-        let db = this.dbByRoot.get(canonical);
-        if (!db) {
-            const dbPath = this.dbPathOverride ?? path.join(canonical, '.sisearch', 'index.sqlite');
-            // M7.1: 延迟加载 DbBackend 构造器,使 symbolIndex 模块在 better-sqlite3
-            // 绑定损坏时仍能装载成功(首次触达才失败,被 _doSynchronize/loadFromDisk
-            // 的上层 try/catch 捕获)。
-            const DbBackendCtor = loadDbBackend();
-            db = new DbBackendCtor(dbPath);
-            db.openOrInit();
-            this.dbByRoot.set(canonical, db);
+        let handles = this.handlesByRoot.get(canonical);
+        if (handles) { return handles; }
+
+        const dbPath = this.dbPathOverride ?? path.join(canonical, '.sisearch', 'index.sqlite');
+        const DbBackendCtor = loadDbBackend();
+        const isMemory = dbPath === ':memory:';
+
+        if (isMemory) {
+            // 测试场景:单 writer handle 兼做 read。
+            const handle = new DbBackendCtor(dbPath);
+            handle.openOrInit();
+            handles = {
+                readHandle: handle,
+                writerClient: null,
+                writerDbPath: dbPath,
+                inMemory: true,
+            };
+            this.handlesByRoot.set(canonical, handles);
+            return handles;
         }
-        return db;
+
+        // 生产路径:确保 DB 文件 + schema 已存在,然后 readonly 开 handle。
+        // readonly 的 { fileMustExist: true } 若 file 不存在会抛;因此首次 bootstrap 一次 writer。
+        if (!fs.existsSync(dbPath)) {
+            fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+            const bootstrap = new DbBackendCtor(dbPath);
+            bootstrap.openOrInit();
+            bootstrap.close();
+        }
+        const readHandle = new DbBackendCtor(dbPath, { readonly: true });
+        readHandle.openOrInit();
+
+        handles = {
+            readHandle,
+            writerClient: null,
+            writerDbPath: dbPath,
+            inMemory: false,
+        };
+        this.handlesByRoot.set(canonical, handles);
+        return handles;
+    }
+
+    /** M10c: 按 canonical workspaceRoot 记忆化 DbWriterClient。
+     *  首次调用时 spawn worker_thread;synchronize / syncDirty 期间常驻,dispose/clearDisk 时 terminate。
+     *  :memory: 路径不应走到这里 —— 调用方需先检查 handles.inMemory。 */
+    private getOrCreateWriterClient(workspaceRoot: string): DbWriterClientType {
+        const handles = this.getOrCreateHandles(workspaceRoot);
+        if (handles.inMemory) {
+            throw new Error('getOrCreateWriterClient called on in-memory workspace');
+        }
+        if (handles.writerClient) { return handles.writerClient; }
+        if (!this.extensionPath) {
+            throw new Error(
+                'SymbolIndex: extensionPath not configured — cannot spawn dbWriterWorker. ' +
+                'Pass extensionPath via SymbolIndexDeps (see composition.ts).',
+            );
+        }
+        const DbWriterClientCtor = loadDbWriterClient();
+        // tsc outputs to out/src/index/dbWriterWorker.js — same pattern as workerPoolFactory.
+        const scriptPath = path.join(this.extensionPath, 'out', 'src', 'index', 'dbWriterWorker.js');
+        handles.writerClient = new DbWriterClientCtor({
+            workerScriptPath: scriptPath,
+            dbPath: handles.writerDbPath,
+        });
+        return handles.writerClient;
     }
 
     /** 统一 parse 入口:有 WorkerPool 走它,否则主线程回退。

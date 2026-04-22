@@ -1,10 +1,24 @@
 // src/sync/syncOrchestrator.ts
-// 全量/增量 Sync 主线程调度器 —— M2.3 后 deps 只含 db: DbBackend。
+// 全量/增量 Sync 主线程调度器 —— M10c 后 db 变成 SyncDb 接口(由 façade 提供适配器),
+// 主线程 read handle + writer worker 的组合被透明封装在适配器里。
 
 import type { IndexedFile } from '../index/indexTypes';
 import type { FileCandidate, ClassifyResult } from './batchClassifier';
 import type { ParseBatchResult } from './workerPool';
-import type { DbBackend } from '../index/dbBackend';
+import type { WriteBatch } from '../index/dbBackend';
+
+/**
+ * M10c: 抽象化 SyncOrchestrator 所需的 db 能力。实际实现可能是:
+ *  - 直接的 DbBackend(测试走 :memory:)
+ *  - 适配器:writeBatch 转发到 DbWriterClient(worker_thread),getAllFileMetadata 从 readonly handle 读
+ *  writeBatch 必须是 fire-and-forget 语义(void),worker 侧自行串行落盘。
+ *  checkpoint 从 orchestrator 视角可以是 no-op —— façade 在 orchestrator 返回后 drain + checkpoint 收尾。
+ */
+export interface SyncDb {
+    writeBatch(batch: WriteBatch): void;
+    getAllFileMetadata(): Map<string, IndexedFile>;
+    checkpoint(): void;
+}
 
 export interface SyncDeps {
     scanFiles: (workspaceRoot: string) => Promise<FileCandidate[]>;
@@ -22,7 +36,7 @@ export interface SyncDeps {
         ): Promise<void>;
     };
     /** 单一持久化出口:writeBatch / getAllFileMetadata / checkpoint。 */
-    db: Pick<DbBackend, 'writeBatch' | 'getAllFileMetadata' | 'checkpoint'>;
+    db: SyncDb;
     onProgress?: (phase: string, current: number, total: number, currentFile?: string) => void;
 }
 

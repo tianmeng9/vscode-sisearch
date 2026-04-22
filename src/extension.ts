@@ -32,7 +32,10 @@ export function activate(context: vscode.ExtensionContext) {
     const resultsPanel = new ResultsPanel(context.extensionUri);
     const editorDecorations = new EditorDecorations(context.extensionUri);
     const highlightsTreeProvider = new HighlightsTreeProvider();
-    const symbolIndex = new SymbolIndex({ indexEnabled: nativeCheck.available });
+    const symbolIndex = new SymbolIndex({
+        indexEnabled: nativeCheck.available,
+        extensionPath: context.extensionPath,
+    });
 
     // ── 基础设施布线 ──────────────────────────────────────────────
     if (nativeCheck.available) {
